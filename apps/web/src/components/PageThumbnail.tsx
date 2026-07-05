@@ -25,7 +25,7 @@ export default function PageThumbnail({
           <X size={12} strokeWidth={2.5} />
         </button>
       )}
-      <div className="flex aspect-[3/4] items-center justify-center bg-paper p-2">
+      <div className="flex aspect-3/4 items-center justify-center bg-paper p-2">
         {isBlank ? (
           <div className="h-full w-full rounded border border-dashed border-line bg-surface" />
         ) : (
