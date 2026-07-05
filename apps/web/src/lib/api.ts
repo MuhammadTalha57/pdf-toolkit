@@ -25,7 +25,6 @@ export async function uploadPDF(file: File): Promise<string> {
     const formData = new FormData();
     formData.append("file", file);
 
-    console.log(API_BASE_URL);
     const response = await fetch(`${API_BASE_URL}/pdf/upload`, {
         method: "POST",
         body: formData,
