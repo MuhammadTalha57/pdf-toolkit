@@ -1,3 +1,4 @@
+
 import type { PDFDocumentProxy } from "pdfjs-dist";
 
 let pdfjsPromise: Promise<typeof import("pdfjs-dist")> | null = null;
@@ -5,7 +6,7 @@ let pdfjsPromise: Promise<typeof import("pdfjs-dist")> | null = null;
 function getPdfjs() {
   if (!pdfjsPromise) {
     pdfjsPromise = import("pdfjs-dist").then((pdfjsLib) => {
-      pdfjsLib.GlobalWorkerOptions.workerSrc = `https://cdnjs.cloudflare.com/ajax/libs/pdf.js/${pdfjsLib.version}/pdf.worker.min.mjs`;
+      pdfjsLib.GlobalWorkerOptions.workerSrc = "/pdf.worker.min.mjs";
       return pdfjsLib;
     });
   }

@@ -129,6 +129,7 @@ export default function SplitPage() {
   }
 
   return (
+
     <div className="mx-auto max-w-3xl px-6 py-16">
       <h1 className="font-display text-4xl italic text-ink">Split a PDF</h1>
       <p className="mt-2 text-ink-soft">
@@ -138,7 +139,7 @@ export default function SplitPage() {
       {!file && (
         <div className="mt-8">
           <Dropzone onFilesSelected={handleFileSelected} />
-        </div>
+              </div>
       )}
 
       {isPreviewing && (
