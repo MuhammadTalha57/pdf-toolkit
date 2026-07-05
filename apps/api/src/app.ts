@@ -2,6 +2,7 @@ import express from "express";
 import cors from "cors";
 import pdfRoutes from "./routes/pdf.routes.js"
 import rateLimit from "express-rate-limit";
+import { errorMiddleware } from "./middlewares/error.middleware.js";
 
 const app = express();
 app.use(cors());
@@ -24,5 +25,7 @@ app.get("/health", (req, res) => {
 app.use("/pdf", pdfRoutes);
 
 app.get("/", (req, res) => res.send("pdf-toolkit-server running"));
+
+app.use(errorMiddleware);
 
 export default app;
