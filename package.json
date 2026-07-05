@@ -1,6 +1,7 @@
 {
   "name": "pdf-toolkit",
   "private": true,
+  "packageManager": "npm@11.12.1",
   "scripts": {
     "build": "turbo run build",
     "dev": "turbo run dev",
@@ -15,13 +16,6 @@
   },
   "engines": {
     "node": ">=18"
-  },
-  "devEngines": {
-    "packageManager": {
-      "name": "npm",
-      "version": ">=11.0.0",
-      "onFail": "warn"
-    }
   },
   "workspaces": [
     "apps/*",
