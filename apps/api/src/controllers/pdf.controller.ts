@@ -10,13 +10,55 @@ type OrganizeOp = { type: "page"; sourceIndex: number } | { type: "blank" };
 
 async function uploadPdfDocument(pdf: PDFDocument, filePrefix: string): Promise<string> {
     const bytes = await pdf.save();
-    const buffer = Buffer.from(bytes);
-    const file = new File([buffer], `${filePrefix}-${Date.now()}.pdf`, {
+    const file = new File([bytes as BlobPart], `${filePrefix}-${Date.now()}.pdf`, {
         type: "application/pdf",
     });
     const blob = await uploadBlob(file);
     return blob.url;
 }
+
+export const handleUploadPdf = async (req: Request, res: Response) => {
+    const file = req.file;
+
+    if (!file) {
+        return res.status(400).json({
+            error: "Invalid request: PDF file is required in 'file' field.",
+        });
+    }
+
+    if (file.mimetype !== "application/pdf") {
+        return res.status(400).json({
+            error: "Invalid request: only PDF files are allowed.",
+        });
+    }
+
+    const safeName = (file.originalname || "uploaded.pdf").endsWith(".pdf")
+        ? file.originalname
+        : `${file.originalname || "uploaded"}.pdf`;
+
+    // const uploadFile = new File([file.buffer], safeName, {
+    //     type: "application/pdf",
+    // });
+
+    const uploadFile = new File([file.buffer as BlobPart], `${safeName}-${Date.now()}.pdf`, {
+        type: "application/pdf",
+    });
+
+    try {
+        const blob = await uploadBlob(uploadFile);
+        return res.status(200).json({
+            message: "PDF uploaded successfully.",
+            url: blob.url,
+        });
+    } catch (error) {
+        console.error("PDF upload failed", error);
+        return res.status(502).json({
+            error: "Failed to upload PDF.",
+        });
+    }
+};
+
+
 
 export const handleMergePdfs = async (req: Request, res: Response) => {
 	const { urls } = req.body as { urls?: string[] };
