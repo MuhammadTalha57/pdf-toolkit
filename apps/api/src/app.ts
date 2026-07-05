@@ -4,8 +4,10 @@ import pdfRoutes from "./routes/pdf.routes.js"
 import rateLimit from "express-rate-limit";
 import { errorMiddleware } from "./middlewares/error.middleware.js";
 
+const FRONTEND_URL = process.env.FRONTEND_URL;
+
 const app = express();
-app.use(cors());
+app.use(cors({origin: FRONTEND_URL}));
 app.use(express.json());
 
 const limiter = rateLimit({
