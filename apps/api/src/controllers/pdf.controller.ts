@@ -2,7 +2,21 @@ import type {Request, Response} from "express";
 import { PDFDocument } from "pdf-lib";
 import readPDFFromURL from "../services/read.service.js";
 import mergePDFs from "../services/merge.service.js";
+import { organizePdf } from "../services/organize.service.js";
+import { splitPdf } from "../services/split.service.js";
 import { uploadBlob } from "../utils/blobUtils.js";
+
+type OrganizeOp = { type: "page"; sourceIndex: number } | { type: "blank" };
+
+async function uploadPdfDocument(pdf: PDFDocument, filePrefix: string): Promise<string> {
+    const bytes = await pdf.save();
+    const buffer = Buffer.from(bytes);
+    const file = new File([buffer], `${filePrefix}-${Date.now()}.pdf`, {
+        type: "application/pdf",
+    });
+    const blob = await uploadBlob(file);
+    return blob.url;
+}
 
 export const handleMergePdfs = async (req: Request, res: Response) => {
 	const { urls } = req.body as { urls?: string[] };
@@ -49,18 +63,12 @@ export const handleMergePdfs = async (req: Request, res: Response) => {
         });
     }
 
-    const mergedBytes = await merged.save();
-    const mergedBuffer = Buffer.from(mergedBytes);
-    const mergedFile = new File([mergedBuffer], `merged-${Date.now()}.pdf`, {
-        type: "application/pdf",
-    });
     try {
-
-        const blob = await uploadBlob(mergedFile);
+        const url = await uploadPdfDocument(merged, "merged");
     
         return res.status(200).json({
             message: "PDFs merged and uploaded successfully.",
-            url: blob.url,
+            url,
         });
     } catch (error) {
         console.error("PDF upload failed", error);
@@ -68,4 +76,132 @@ export const handleMergePdfs = async (req: Request, res: Response) => {
             error: "Failed to upload merged PDF.",
         });
     }
-}
+};
+
+export const handleOrganizePdf = async (req: Request, res: Response) => {
+    const { url, operations } = req.body as { url?: string; operations?: OrganizeOp[] };
+
+    if (typeof url !== "string" || url.trim().length === 0) {
+        return res.status(400).json({
+            error: "Invalid request: 'url' is required and must be a non-empty string.",
+        });
+    }
+
+    if (!Array.isArray(operations)) {
+        return res.status(400).json({
+            error: "Invalid request: 'operations' is required and must be an array.",
+        });
+    }
+
+    const hasInvalidOp = operations.some((op) => {
+        if (!op || typeof op !== "object" || !("type" in op)) {
+            return true;
+        }
+
+        if (op.type === "blank") {
+            return false;
+        }
+
+        if (op.type === "page") {
+            return !Number.isInteger(op.sourceIndex) || op.sourceIndex < 0;
+        }
+
+        return true;
+    });
+
+    if (hasInvalidOp) {
+        return res.status(400).json({
+            error: "Invalid request: each operation must be { type: 'blank' } or { type: 'page', sourceIndex: number }.",
+        });
+    }
+
+    const sourcePdf = await readPDFFromURL(url);
+    if (!sourcePdf) {
+        return res.status(400).json({
+            error: "Could not read PDF from the provided URL.",
+        });
+    }
+
+    const organized = await organizePdf(sourcePdf, operations);
+    if (!organized) {
+        return res.status(400).json({
+            error: "Failed to organize PDF with the provided operations.",
+        });
+    }
+
+    try {
+        const organizedUrl = await uploadPdfDocument(organized, "organized");
+        return res.status(200).json({
+            message: "PDF organized and uploaded successfully.",
+            url: organizedUrl,
+        });
+    } catch (error) {
+        console.error("Organized PDF upload failed", error);
+        return res.status(502).json({
+            error: "Failed to upload organized PDF.",
+        });
+    }
+};
+
+export const handleSplitPdf = async (req: Request, res: Response) => {
+    const { url, splits } = req.body as { url?: string; splits?: [number, number][][] };
+
+    if (typeof url !== "string" || url.trim().length === 0) {
+        return res.status(400).json({
+            error: "Invalid request: 'url' is required and must be a non-empty string.",
+        });
+    }
+
+    if (!Array.isArray(splits)) {
+        return res.status(400).json({
+            error: "Invalid request: 'splits' is required and must be an array.",
+        });
+    }
+
+    const hasInvalidSplitShape = splits.some(
+        (split) =>
+            !Array.isArray(split) ||
+            split.some(
+                (range) =>
+                    !Array.isArray(range) ||
+                    range.length !== 2 ||
+                    !Number.isInteger(range[0]) ||
+                    !Number.isInteger(range[1]),
+            ),
+    );
+
+    if (hasInvalidSplitShape) {
+        return res.status(400).json({
+            error: "Invalid request: 'splits' must match [[[start, end], ...], ...] with integer indices.",
+        });
+    }
+
+    const sourcePdf = await readPDFFromURL(url);
+    if (!sourcePdf) {
+        return res.status(400).json({
+            error: "Could not read PDF from the provided URL.",
+        });
+    }
+
+    const splitDocs = await splitPdf(sourcePdf, splits);
+    if (!splitDocs) {
+        return res.status(400).json({
+            error: "Failed to split PDF with the provided ranges.",
+        });
+    }
+
+    try {
+        const urls = await Promise.all(
+            splitDocs.map((doc, i) => uploadPdfDocument(doc, `split-${i + 1}`)),
+        );
+        return res.status(200).json({
+            message: "PDF split and uploaded successfully.",
+            urls,
+        });
+    } catch (error) {
+        console.error("Split PDF upload failed", error);
+        return res.status(502).json({
+            error: "Failed to upload one or more split PDFs.",
+        });
+    }
+};
