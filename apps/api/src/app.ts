@@ -13,7 +13,7 @@ app.use(express.json());
 
 const limiter = rateLimit({
   windowMs: 15 * 60 * 1000, // 15 Minutes
-  max: 100,
+  max: Number(process.env.RATE_LIMIT_MAX ?? 100),
   message: "Too many requests, Please try again later",
   standardHeaders: true,
 })

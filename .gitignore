@@ -39,3 +39,11 @@ yarn-error.log*
 
 # Local server
 apps/api/src/server.ts
+# E2E tests
+e2e-tests/.venv
+e2e-tests/screenshots*
+e2e-tests/report*.html
+e2e-tests/__pycache__
+e2e-tests/.pytest_cache
+submission.zip
+.superpowers
