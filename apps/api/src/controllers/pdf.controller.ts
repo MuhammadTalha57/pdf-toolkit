@@ -5,6 +5,8 @@ import mergePDFs from "../services/merge.service.js";
 import { organizePdf } from "../services/organize.service.js";
 import { splitPdf } from "../services/split.service.js";
 import { uploadBlob } from "../utils/blobUtils.js";
+import { del, put } from "@vercel/blob";
+import { deleteStub, getStub, isStubMode, replaceStub } from "../utils/stubStore.js";
 
 type OrganizeOp = { type: "page"; sourceIndex: number } | { type: "blank" };
 
@@ -246,4 +248,74 @@ export const handleSplitPdf = async (req: Request, res: Response) => {
             error: "Failed to upload one or more split PDFs.",
         });
     }
+};
+
+const fileKey = (req: Request) =>
+    typeof req.query.url === "string" ? req.query.url : "";
+
+export const handleGetFile = async (req: Request, res: Response) => {
+    const key = fileKey(req);
+    if (!key) {
+        return res.status(400).json({ error: "Invalid request: 'url' query parameter is required." });
+    }
+    if (!isStubMode()) {
+        const upstream = await fetch(key);
+        if (!upstream.ok) return res.status(404).json({ error: "File not found." });
+        res.type("application/pdf");
+        return res.send(Buffer.from(await upstream.arrayBuffer()));
+    }
+    const bytes = getStub(key);
+    if (!bytes) {
+        return res.status(404).json({ error: "File not found." });
+    }
+    res.type("application/pdf");
+    return res.send(bytes);
+};
+
+export const handlePutFile = async (req: Request, res: Response) => {
+    const key = fileKey(req);
+    if (!key) {
+        return res.status(400).json({ error: "Invalid request: 'url' query parameter is required." });
+    }
+    if (!req.file) {
+        return res.status(400).json({ error: "Invalid request: PDF file is required in 'file' field." });
+    }
+    if (!isStubMode()) {
+        try {
+            await del(key, { token: process.env.BLOB_READ_WRITE_TOKEN || "" });
+            const blob = await put(req.file.originalname, req.file.buffer, {
+                access: "public",
+                addRandomSuffix: true,
+                token: process.env.BLOB_READ_WRITE_TOKEN || "",
+            });
+            return res.status(200).json({ message: "PDF replaced.", url: blob.url });
+        } catch (error) {
+            console.error("PDF replace failed", error);
+            return res.status(502).json({ error: "Failed to replace PDF." });
+        }
+    }
+    if (!replaceStub(key, req.file.buffer)) {
+        return res.status(404).json({ error: "File not found." });
+    }
+    return res.status(200).json({ message: "PDF replaced." });
+};
+
+export const handleDeleteFile = async (req: Request, res: Response) => {
+    const key = fileKey(req);
+    if (!key) {
+        return res.status(400).json({ error: "Invalid request: 'url' query parameter is required." });
+    }
+    if (!isStubMode()) {
+        try {
+            await del(key, { token: process.env.BLOB_READ_WRITE_TOKEN || "" });
+            return res.status(200).json({ message: "PDF deleted." });
+        } catch (error) {
+            console.error("PDF delete failed", error);
+            return res.status(502).json({ error: "Failed to delete PDF." });
+        }
+    }
+    if (!deleteStub(key)) {
+        return res.status(404).json({ error: "File not found." });
+    }
+    return res.status(200).json({ message: "PDF deleted." });
 };

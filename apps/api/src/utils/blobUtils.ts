@@ -1,6 +1,12 @@
 import {put} from "@vercel/blob"
+import { isStubMode, putStub } from "./stubStore.js"
 
 export async function uploadBlob(file: File) {
+    if (isStubMode()) {
+        const { url } = await putStub(file);
+        return { url };
+    }
+
     console.log({
         name: file.name,
         size: file.size,
