@@ -1,4 +1,3 @@
-"""Feature 4: Upload validation (PDF only, max 4MB), exercised through the Split dropzone."""
 from playwright.sync_api import Page, expect
 
 from conftest import WEB

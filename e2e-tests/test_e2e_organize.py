@@ -1,4 +1,3 @@
-"""Feature 3: Organize pages (add blank, remove)."""
 from playwright.sync_api import Page, expect
 
 from conftest import WEB

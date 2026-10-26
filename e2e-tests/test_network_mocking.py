@@ -1,4 +1,3 @@
-"""Network mocking: the page must survive a failing or empty backend."""
 from playwright.sync_api import Page, expect
 
 from conftest import API, WEB

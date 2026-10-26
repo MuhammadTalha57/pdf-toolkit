@@ -1,6 +1,6 @@
 # PDF Toolkit: Playwright (Python) Test Report
 
-**Team:** Member A (name to be filled), Member B (name to be filled)
+**Team:** Muhammad Talha (SE-23057), Muhammad Furqan Mohsin (SE-23056)
 **Site under test:** PDF Toolkit (Next.js frontend + Express API), run locally with a stubbed file store (`BLOB_STUB=1`), so no cloud token is needed.
 **Tools:** Python 3.12, pytest, pytest-playwright, pytest-html, pypdf, requests.
 **Browsers:** Chromium, Firefox, WebKit.
@@ -74,10 +74,9 @@
 
 | Member | Part |
 |---|---|
-| Member A | Test setup (conftest, helpers), Merge E2E (E1 to E3), Split E2E (E4 to E6), API CRUD tests (A1 to A4) |
-| Member B | Organize E2E (E7 to E9), Upload validation E2E (E10 to E12), network mocking (M1, M2), intentional-bug demo, cross-browser run |
+| Muhammad Talha | Test setup (conftest, helpers), Merge E2E (E1 to E3), Split E2E (E4 to E6), API CRUD tests (A1 to A4) |
+| Muhammad Furqan Mohsin | Organize E2E (E7 to E9), Upload validation E2E (E10 to E12), network mocking (M1, M2), intentional-bug demo, cross-browser run |
 
-(Replace "Member A/B" with real names. Both members should be able to explain every test.)
 
 ## How to run
 

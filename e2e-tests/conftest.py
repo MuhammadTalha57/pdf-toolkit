@@ -1,4 +1,3 @@
-"""Shared fixtures: boots the API (stub mode) and the web app, saves a screenshot per test."""
 import base64
 import os
 import re
@@ -28,7 +27,7 @@ def _wait_for(url: str, timeout: int = 180):
 
 
 def _kill(proc: subprocess.Popen):
-    # shell=True on Windows spawns a tree; kill the whole tree.
+    
     subprocess.run(["taskkill", "/F", "/T", "/PID", str(proc.pid)], capture_output=True)
 
 
