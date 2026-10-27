@@ -10,6 +10,8 @@ const FRONTEND_URL = process.env.FRONTEND_URL;
 const app = express();
 app.use(cors({origin: FRONTEND_URL}));
 app.use(express.json());
+app.set('trust proxy', 1); // set this before any rate-limit middleware
+
 
 const limiter = rateLimit({
   windowMs: 15 * 60 * 1000, // 15 Minutes
