@@ -1,58 +1,40 @@
 import base64
 import os
 import re
-import subprocess
 import time
 from pathlib import Path
 
 import pytest
 import requests
+from playwright.sync_api import expect
 
-ROOT = Path(__file__).resolve().parent.parent
-WEB = "https://pdf-toolkit-web-orcin.vercel.app/"
-API = "https://pdf-toolkit-web-three.vercel.app/"
+WEB = os.environ.get("WEB_URL", "https://pdf-toolkit-web-orcin.vercel.app").rstrip("/")
+API = os.environ.get("API_URL", "").rstrip("/")
 SHOT_DIR = Path(os.environ.get("SHOT_DIR", Path(__file__).parent / "screenshots"))
 
+expect.set_options(timeout=30000)   # deployed app is slower (cold starts, real storage)
 
-def _wait_for(url: str, timeout: int = 180):
+
+def _wait_for(url: str, timeout: int = 90):
     deadline = time.time() + timeout
     while time.time() < deadline:
         try:
-            if requests.get(url, timeout=2).status_code < 500:
+            if requests.get(url, timeout=10).status_code < 500:
                 return
         except requests.RequestException:
             pass
-        time.sleep(1)
-    raise RuntimeError(f"{url} did not come up within {timeout}s")
-
-
-def _kill(proc: subprocess.Popen):
-    
-    subprocess.run(["taskkill", "/F", "/T", "/PID", str(proc.pid)], capture_output=True)
+        time.sleep(2)
+    raise RuntimeError(f"{url} did not respond within {timeout}s")
 
 
 @pytest.fixture(scope="session", autouse=True)
 def servers():
-    api_env = {
-        **os.environ,
-        "BLOB_STUB": "1",
-        "PORT": "4000",
-        "FRONTEND_URL": WEB,
-        "RATE_LIMIT_MAX": "100000",
-    }
-    web_env = {**os.environ, "NEXT_PUBLIC_API_BASE_URL": API}
-
-    api = subprocess.Popen("npx tsx src/server.ts", cwd=ROOT / "apps" / "api", env=api_env, shell=True)
-    if os.environ.get("SKIP_BUILD") != "1":
-        subprocess.run("npm run build", cwd=ROOT / "apps" / "web", env=web_env, shell=True, check=True)
-    web = subprocess.Popen("npm run start", cwd=ROOT / "apps" / "web", env=web_env, shell=True)
-    try:
-        _wait_for(f"{API}/health")
-        _wait_for(WEB)
-        yield
-    finally:
-        _kill(web)
-        _kill(api)
+    """Deployed app: nothing to start, just check both sites are up."""
+    if not API:
+        raise RuntimeError("Set API_URL to your deployed API, e.g. https://xxx.vercel.app")
+    _wait_for(f"{API}/health")
+    _wait_for(WEB)
+    yield
 
 
 @pytest.hookimpl(hookwrapper=True)
