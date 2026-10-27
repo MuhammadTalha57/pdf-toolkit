@@ -9,7 +9,7 @@ import requests
 from playwright.sync_api import expect
 
 WEB = os.environ.get("WEB_URL", "https://pdf-toolkit-web-orcin.vercel.app").rstrip("/")
-API = os.environ.get("API_URL", "").rstrip("/")
+API = os.environ.get("API_URL", "https://pdf-toolkit-web-three.vercel.app").rstrip("/")
 SHOT_DIR = Path(os.environ.get("SHOT_DIR", Path(__file__).parent / "screenshots"))
 
 expect.set_options(timeout=30000)   # deployed app is slower (cold starts, real storage)
