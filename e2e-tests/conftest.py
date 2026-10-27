@@ -9,8 +9,8 @@ import pytest
 import requests
 
 ROOT = Path(__file__).resolve().parent.parent
-WEB = "http://localhost:3000"
-API = "http://localhost:4000"
+WEB = "https://pdf-toolkit-web-orcin.vercel.app/"
+API = "https://pdf-toolkit-web-three.vercel.app/"
 SHOT_DIR = Path(os.environ.get("SHOT_DIR", Path(__file__).parent / "screenshots"))
 
 

@@ -5,7 +5,7 @@ import mergePDFs from "../services/merge.service.js";
 import { organizePdf } from "../services/organize.service.js";
 import { splitPdf } from "../services/split.service.js";
 import { uploadBlob } from "../utils/blobUtils.js";
-import { del, put } from "@vercel/blob";
+import { del, put, head } from "@vercel/blob";
 import { deleteStub, getStub, isStubMode, replaceStub } from "../utils/stubStore.js";
 
 type OrganizeOp = { type: "page"; sourceIndex: number } | { type: "blank" };
@@ -253,12 +253,36 @@ export const handleSplitPdf = async (req: Request, res: Response) => {
 const fileKey = (req: Request) =>
     typeof req.query.url === "string" ? req.query.url : "";
 
+const blobToken = () => process.env.BLOB_READ_WRITE_TOKEN || "";
+
+// Only allow real Vercel Blob URLs (also stops the API acting as an open proxy)
+const isBlobUrl = (value: string) => {
+    try {
+        const u = new URL(value);
+        return u.protocol === "https:" && u.hostname.endsWith(".blob.vercel-storage.com");
+    } catch {
+        return false;
+    }
+};
+
+// head() asks the Blob API directly, so it is not fooled by CDN caching
+async function blobExists(url: string): Promise<boolean> {
+    if (!isBlobUrl(url)) return false;
+    try {
+        await head(url, { token: blobToken() });
+        return true;
+    } catch {
+        return false;
+    }
+}
+
 export const handleGetFile = async (req: Request, res: Response) => {
     const key = fileKey(req);
     if (!key) {
         return res.status(400).json({ error: "Invalid request: 'url' query parameter is required." });
     }
     if (!isStubMode()) {
+        if (!(await blobExists(key))) return res.status(404).json({ error: "File not found." });
         const upstream = await fetch(key);
         if (!upstream.ok) return res.status(404).json({ error: "File not found." });
         res.type("application/pdf");
@@ -281,12 +305,13 @@ export const handlePutFile = async (req: Request, res: Response) => {
         return res.status(400).json({ error: "Invalid request: PDF file is required in 'file' field." });
     }
     if (!isStubMode()) {
+        if (!(await blobExists(key))) return res.status(404).json({ error: "File not found." });
         try {
-            await del(key, { token: process.env.BLOB_READ_WRITE_TOKEN || "" });
+            await del(key, { token: blobToken() });
             const blob = await put(req.file.originalname, req.file.buffer, {
                 access: "public",
                 addRandomSuffix: true,
-                token: process.env.BLOB_READ_WRITE_TOKEN || "",
+                token: blobToken(),
             });
             return res.status(200).json({ message: "PDF replaced.", url: blob.url });
         } catch (error) {
@@ -306,8 +331,9 @@ export const handleDeleteFile = async (req: Request, res: Response) => {
         return res.status(400).json({ error: "Invalid request: 'url' query parameter is required." });
     }
     if (!isStubMode()) {
+        if (!(await blobExists(key))) return res.status(404).json({ error: "File not found." });
         try {
-            await del(key, { token: process.env.BLOB_READ_WRITE_TOKEN || "" });
+            await del(key, { token: blobToken() });
             return res.status(200).json({ message: "PDF deleted." });
         } catch (error) {
             console.error("PDF delete failed", error);
