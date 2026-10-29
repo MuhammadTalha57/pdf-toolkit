@@ -35,4 +35,4 @@ def test_merge_handles_empty_response(page: Page, tmp_path):
     page.wait_for_timeout(2000)
     assert errors == []
     expect(page.get_by_role("heading", name="Your merged PDF is ready")).to_have_count(0)
-    expect(page.get_by_role("heading", name="Merge PDFs")).to_be_visible()
+    expect(page.get_by_role("heading", name="Something Went Wrong")).to_be_visible()

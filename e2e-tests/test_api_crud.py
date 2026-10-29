@@ -39,17 +39,21 @@ def test_read_uploaded_pdf_returns_200_and_unknown_returns_404(tmp_path):
 def test_update_pdf_returns_200_and_rejects_non_pdf(tmp_path):
     key = _key(_upload(make_pdf(tmp_path / "a.pdf", 1)).json()["url"])
     new_pdf = make_pdf(tmp_path / "b.pdf", 2)
+
+    # Updating a.pdf with b.pdf
     with open(new_pdf, "rb") as f:
         res = requests.put(FILE, params={"url": key}, files={"file": ("b.pdf", f, "application/pdf")}, timeout=60)
     assert res.status_code == 200
     new_key = res.json().get("url", key)      # real mode returns a new url
     assert _get(new_key).content == new_pdf.read_bytes()
 
+    # Replacing .pdf with .txt
     txt = make_text_file(tmp_path / "x.txt")
     with open(txt, "rb") as f:
         res = requests.put(FILE, params={"url": new_key}, files={"file": ("x.txt", f, "text/plain")}, timeout=60)
     assert res.status_code == 400
 
+    # Updating non existent file
     with open(new_pdf, "rb") as f:
         res = requests.put(FILE, params={"url": "https://example.com/nope.pdf"},
                            files={"file": ("b.pdf", f, "application/pdf")}, timeout=60)
