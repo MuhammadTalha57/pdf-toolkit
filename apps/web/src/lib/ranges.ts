@@ -33,7 +33,7 @@ export function parsePageRanges(
     if (start1Based < 1 || end1Based < 1) {
       throw new Error("Page numbers start at 1.");
     }
-    if (end1Based > totalPages) {
+    if (end1Based >= totalPages) {
       throw new Error(
         `Page ${end1Based} doesn't exist — this PDF has ${totalPages} page${totalPages === 1 ? "" : "s"}.`,
       );
