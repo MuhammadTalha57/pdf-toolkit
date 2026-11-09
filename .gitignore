@@ -54,3 +54,6 @@ backend.hcl
 opencode-session.json
 # CEA
 # docs
+infra
+infra/*
+copilot*
