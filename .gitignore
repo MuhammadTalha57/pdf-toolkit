@@ -37,8 +37,20 @@ yarn-error.log*
 .DS_Store
 *.pem
 
-# Local server
-apps/api/src/server.ts
-
 # Code Graph
 .codegraph
+
+# Terraform
+**/.terraform/*
+*.tfstate
+*.tfstate.*
+*.tfplan
+terraform.tfvars
+!terraform.tfvars.example
+crash.log
+crash.*.log
+backend.hcl
+
+opencode-session.json
+# CEA
+# docs

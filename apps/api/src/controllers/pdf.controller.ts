@@ -1,203 +1,305 @@
-import type {Request, Response} from "express";
-import { PDFDocument } from "pdf-lib";
-import readPDFFromURL from "../services/read.service.js";
+import type { Request, Response } from "express";
+import type { PDFDocument } from "pdf-lib";
+import readPDFFromBuffer from "../services/read.service.js";
 import mergePDFs from "../services/merge.service.js";
 import { organizePdf } from "../services/organize.service.js";
 import { splitPdf } from "../services/split.service.js";
-import { uploadBlob } from "../utils/blobUtils.js";
+import {
+    createDocument,
+    deleteDocumentRow,
+    getDocumentForUser,
+    type DocumentRecord,
+} from "../services/document.service.js";
+import {
+    deleteObject,
+    getObjectBuffer,
+    putObject,
+    resultKey,
+    tempKey,
+} from "../services/storage.service.js";
 
 type OrganizeOp = { type: "page"; sourceIndex: number } | { type: "blank" };
 
-async function uploadPdfDocument(pdf: PDFDocument, filePrefix: string): Promise<string> {
-    const bytes = await pdf.save();
-    const file = new File([bytes as BlobPart], `${filePrefix}-${Date.now()}.pdf`, {
-        type: "application/pdf",
-    });
-    const blob = await uploadBlob(file);
-    return blob.url;
+const TEMP_TTL_MS = 24 * 60 * 60 * 1000;
+
+function baseName(name: string): string {
+    const withoutExtension = name.replace(/\.pdf$/i, "");
+    return withoutExtension.length > 0 ? withoutExtension : "document";
 }
 
-export const handleUploadPdf = async (req: Request, res: Response) => {
+function isStringArray(value: unknown): value is string[] {
+    return (
+        Array.isArray(value) &&
+        value.length > 0 &&
+        value.every((entry) => typeof entry === "string" && entry.trim().length > 0)
+    );
+}
+
+async function storeResultDocument(input: {
+    userId: string;
+    kind: "merge" | "split" | "organize";
+    originalName: string;
+    pdf: PDFDocument;
+    operation: unknown;
+}): Promise<DocumentRecord> {
+    const bytes = Buffer.from(await input.pdf.save());
+    const key = resultKey(input.userId);
+
+    await putObject(key, bytes);
+
+    return createDocument({
+        userId: input.userId,
+        kind: input.kind,
+        originalName: input.originalName,
+        s3Key: key,
+        sizeBytes: bytes.byteLength,
+        pageCount: input.pdf.getPageCount(),
+        status: "ready",
+        operation: input.operation,
+    });
+}
+
+async function cleanupTempDocument(document: DocumentRecord): Promise<void> {
+    if (document.status !== "temp") return;
+
+    try {
+        await deleteObject(document.s3_key);
+        await deleteDocumentRow(document.id);
+    } catch (error) {
+        console.error("Failed to clean up temporary document", document.id, error);
+    }
+}
+
+async function loadOwnedDocument(
+    documentId: string,
+    userId: string,
+): Promise<{ document: DocumentRecord; pdf: PDFDocument } | null> {
+    const document = await getDocumentForUser(documentId, userId);
+
+    if (!document) return null;
+
+    const buffer = await getObjectBuffer(document.s3_key);
+    const pdf = await readPDFFromBuffer(buffer);
+
+    if (!pdf) return null;
+
+    return { document, pdf };
+}
+
+export const handleUploadPdf = async (req: Request, res: Response): Promise<void> => {
+    if (!req.userId) {
+        res.status(401).json({ error: "Authentication required." });
+        return;
+    }
+
     const file = req.file;
 
     if (!file) {
-        return res.status(400).json({
+        res.status(400).json({
             error: "Invalid request: PDF file is required in 'file' field.",
         });
+        return;
     }
 
     if (file.mimetype !== "application/pdf") {
-        return res.status(400).json({
+        res.status(400).json({
             error: "Invalid request: only PDF files are allowed.",
         });
+        return;
     }
 
-    const safeName = (file.originalname || "uploaded.pdf").endsWith(".pdf")
+    const pdf = await readPDFFromBuffer(file.buffer);
+
+    if (!pdf) {
+        res.status(400).json({
+            error: "Invalid request: the uploaded file is not a readable PDF.",
+        });
+        return;
+    }
+
+    const safeName = file.originalname.endsWith(".pdf")
         ? file.originalname
         : `${file.originalname || "uploaded"}.pdf`;
 
-    // const uploadFile = new File([file.buffer], safeName, {
-    //     type: "application/pdf",
-    // });
+    const key = tempKey();
+    await putObject(key, file.buffer);
 
-    const uploadFile = new File([file.buffer as BlobPart], `${safeName}-${Date.now()}.pdf`, {
-        type: "application/pdf",
+    const document = await createDocument({
+        userId: req.userId,
+        kind: "upload",
+        originalName: safeName,
+        s3Key: key,
+        sizeBytes: file.size,
+        pageCount: pdf.getPageCount(),
+        status: "temp",
+        expiresAt: new Date(Date.now() + TEMP_TTL_MS),
     });
 
-    try {
-        const blob = await uploadBlob(uploadFile);
-        return res.status(200).json({
-            message: "PDF uploaded successfully.",
-            url: blob.url,
-        });
-    } catch (error) {
-        console.error("PDF upload failed", error);
-        return res.status(502).json({
-            error: "Failed to upload PDF.",
-        });
-    }
+    res.status(200).json({
+        message: "PDF uploaded successfully.",
+        documentId: document.id,
+        fileName: safeName,
+        pageCount: pdf.getPageCount(),
+    });
 };
 
-
-
-export const handleMergePdfs = async (req: Request, res: Response) => {
-	const { urls } = req.body as { urls?: string[] };
-    if (!Array.isArray(urls)) {
-        return res.status(400).json({
-            error: "Invalid request: 'urls' is required and must be an array of strings.",
-        });
+export const handleMergePdfs = async (req: Request, res: Response): Promise<void> => {
+    if (!req.userId) {
+        res.status(401).json({ error: "Authentication required." });
+        return;
     }
 
-    if (urls.length === 0) {
-        return res.status(400).json({
-            error: "Incomplete request: provide at least one URL.",
+    const { documentIds } = req.body as { documentIds?: unknown };
+
+    if (!isStringArray(documentIds)) {
+        res.status(400).json({
+            error: "Invalid request: 'documentIds' must be a non-empty array of document ids.",
         });
+        return;
     }
 
-    const hasInvalidUrl = urls.some(
-        (url) => typeof url !== "string" || url.trim().length === 0,
+    const loaded = await Promise.all(
+        documentIds.map((id) => loadOwnedDocument(id, req.userId as string)),
     );
 
-    if (hasInvalidUrl) {
-        return res.status(400).json({
-            error: "Invalid request: every URL must be a non-empty string.",
+    if (loaded.some((entry) => entry === null)) {
+        res.status(400).json({
+            error: "One or more documents could not be read.",
         });
+        return;
     }
 
-    const loaded = await Promise.all(urls.map((url) => readPDFFromURL(url)));
-    const hasReadFailure = loaded.some((doc) => doc === null);
-
-    if (hasReadFailure) {
-        return res.status(400).json({
-            error: "One or more PDFs could not be read from the provided URLs.",
-        });
-    }
-
-    const pdfs: PDFDocument[] = loaded.filter(
-        (doc): doc is PDFDocument => doc !== null,
+    const documents = loaded.filter(
+        (entry): entry is { document: DocumentRecord; pdf: PDFDocument } => entry !== null,
     );
 
-    const merged = await mergePDFs(pdfs);
+    const merged = await mergePDFs(documents.map((entry) => entry.pdf));
 
     if (!merged) {
-        return res.status(500).json({
-            error: "Failed to merge PDFs.",
-        });
+        res.status(500).json({ error: "Failed to merge PDFs." });
+        return;
     }
 
-    try {
-        const url = await uploadPdfDocument(merged, "merged");
-    
-        return res.status(200).json({
-            message: "PDFs merged and uploaded successfully.",
-            url,
-        });
-    } catch (error) {
-        console.error("PDF upload failed", error);
-        return res.status(502).json({
-            error: "Failed to upload merged PDF.",
-        });
-    }
+    const result = await storeResultDocument({
+        userId: req.userId,
+        kind: "merge",
+        originalName: "merged.pdf",
+        pdf: merged,
+        operation: { documentIds },
+    });
+
+    await Promise.all(documents.map((entry) => cleanupTempDocument(entry.document)));
+
+    res.status(200).json({
+        message: "PDFs merged successfully.",
+        documentId: result.id,
+        fileName: result.original_name,
+        pageCount: merged.getPageCount(),
+    });
 };
 
-export const handleOrganizePdf = async (req: Request, res: Response) => {
-    const { url, operations } = req.body as { url?: string; operations?: OrganizeOp[] };
+export const handleOrganizePdf = async (req: Request, res: Response): Promise<void> => {
+    if (!req.userId) {
+        res.status(401).json({ error: "Authentication required." });
+        return;
+    }
 
-    if (typeof url !== "string" || url.trim().length === 0) {
-        return res.status(400).json({
-            error: "Invalid request: 'url' is required and must be a non-empty string.",
+    const { documentId, operations } = req.body as {
+        documentId?: unknown;
+        operations?: unknown;
+    };
+
+    if (typeof documentId !== "string" || documentId.length === 0) {
+        res.status(400).json({
+            error: "Invalid request: 'documentId' is required and must be a non-empty string.",
         });
+        return;
     }
 
     if (!Array.isArray(operations)) {
-        return res.status(400).json({
+        res.status(400).json({
             error: "Invalid request: 'operations' is required and must be an array.",
         });
+        return;
     }
 
-    const hasInvalidOp = operations.some((op) => {
-        if (!op || typeof op !== "object" || !("type" in op)) {
-            return true;
-        }
-
-        if (op.type === "blank") {
-            return false;
-        }
-
-        if (op.type === "page") {
-            return !Number.isInteger(op.sourceIndex) || op.sourceIndex < 0;
-        }
-
-        return true;
+    const hasInvalidOperation = operations.some((operation) => {
+        if (typeof operation !== "object" || operation === null) return true;
+        const candidate = operation as { type?: unknown; sourceIndex?: unknown };
+        if (candidate.type === "blank") return false;
+        return (
+            candidate.type !== "page" ||
+            !Number.isInteger(candidate.sourceIndex) ||
+            (candidate.sourceIndex as number) < 0
+        );
     });
 
-    if (hasInvalidOp) {
-        return res.status(400).json({
-            error: "Invalid request: each operation must be { type: 'blank' } or { type: 'page', sourceIndex: number }.",
+    if (hasInvalidOperation) {
+        res.status(400).json({
+            error: "Invalid request: 'operations' must contain page or blank entries.",
         });
+        return;
     }
 
-    const sourcePdf = await readPDFFromURL(url);
-    if (!sourcePdf) {
-        return res.status(400).json({
-            error: "Could not read PDF from the provided URL.",
+    const loaded = await loadOwnedDocument(documentId, req.userId);
+
+    if (!loaded) {
+        res.status(400).json({
+            error: "Could not read the requested document.",
         });
+        return;
     }
 
-    const organized = await organizePdf(sourcePdf, operations);
+    const organized = await organizePdf(loaded.pdf, operations as OrganizeOp[]);
+
     if (!organized) {
-        return res.status(400).json({
+        res.status(400).json({
             error: "Failed to organize PDF with the provided operations.",
         });
+        return;
     }
 
-    try {
-        const organizedUrl = await uploadPdfDocument(organized, "organized");
-        return res.status(200).json({
-            message: "PDF organized and uploaded successfully.",
-            url: organizedUrl,
-        });
-    } catch (error) {
-        console.error("Organized PDF upload failed", error);
-        return res.status(502).json({
-            error: "Failed to upload organized PDF.",
-        });
-    }
+    const result = await storeResultDocument({
+        userId: req.userId,
+        kind: "organize",
+        originalName: `${baseName(loaded.document.original_name)}-organized.pdf`,
+        pdf: organized,
+        operation: { documentId, operations },
+    });
+
+    await cleanupTempDocument(loaded.document);
+
+    res.status(200).json({
+        message: "PDF organized successfully.",
+        documentId: result.id,
+        fileName: result.original_name,
+        pageCount: organized.getPageCount(),
+    });
 };
 
-export const handleSplitPdf = async (req: Request, res: Response) => {
-    const { url, splits } = req.body as { url?: string; splits?: [number, number][][] };
+export const handleSplitPdf = async (req: Request, res: Response): Promise<void> => {
+    if (!req.userId) {
+        res.status(401).json({ error: "Authentication required." });
+        return;
+    }
 
-    if (typeof url !== "string" || url.trim().length === 0) {
-        return res.status(400).json({
-            error: "Invalid request: 'url' is required and must be a non-empty string.",
+    const { documentId, splits } = req.body as {
+        documentId?: unknown;
+        splits?: unknown;
+    };
+
+    if (typeof documentId !== "string" || documentId.length === 0) {
+        res.status(400).json({
+            error: "Invalid request: 'documentId' is required and must be a non-empty string.",
         });
+        return;
     }
 
     if (!Array.isArray(splits)) {
-        return res.status(400).json({
+        res.status(400).json({
             error: "Invalid request: 'splits' is required and must be an array.",
         });
+        return;
     }
 
     const hasInvalidSplitShape = splits.some(
@@ -213,37 +315,48 @@ export const handleSplitPdf = async (req: Request, res: Response) => {
     );
 
     if (hasInvalidSplitShape) {
-        return res.status(400).json({
+        res.status(400).json({
             error: "Invalid request: 'splits' must match [[[start, end], ...], ...] with integer indices.",
         });
+        return;
     }
 
-    const sourcePdf = await readPDFFromURL(url);
-    if (!sourcePdf) {
-        return res.status(400).json({
-            error: "Could not read PDF from the provided URL.",
+    const loaded = await loadOwnedDocument(documentId, req.userId);
+
+    if (!loaded) {
+        res.status(400).json({
+            error: "Could not read the requested document.",
         });
+        return;
     }
 
-    const splitDocs = await splitPdf(sourcePdf, splits);
+    const splitDocs = await splitPdf(loaded.pdf, splits as [number, number][][]);
+
     if (!splitDocs) {
-        return res.status(400).json({
+        res.status(400).json({
             error: "Failed to split PDF with the provided ranges.",
         });
+        return;
     }
 
-    try {
-        const urls = await Promise.all(
-            splitDocs.map((doc, i) => uploadPdfDocument(doc, `split-${i + 1}`)),
-        );
-        return res.status(200).json({
-            message: "PDF split and uploaded successfully.",
-            urls,
-        });
-    } catch (error) {
-        console.error("Split PDF upload failed", error);
-        return res.status(502).json({
-            error: "Failed to upload one or more split PDFs.",
-        });
-    }
+    const base = baseName(loaded.document.original_name);
+    const results = await Promise.all(
+        splitDocs.map((doc, index) =>
+            storeResultDocument({
+                userId: req.userId as string,
+                kind: "split",
+                originalName: `${base}-part-${index + 1}.pdf`,
+                pdf: doc,
+                operation: { documentId, index },
+            }),
+        ),
+    );
+
+    await cleanupTempDocument(loaded.document);
+
+    res.status(200).json({
+        message: "PDF split successfully.",
+        documentIds: results.map((result) => result.id),
+        fileNames: results.map((result) => result.original_name),
+    });
 };

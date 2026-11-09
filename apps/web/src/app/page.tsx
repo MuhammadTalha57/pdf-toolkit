@@ -28,9 +28,9 @@ export default function Home() {
       <section className="mx-auto max-w-4xl px-6 pt-20 pb-14 text-center">
         <h1 className="font-display text-5xl leading-tight text-ink italic sm:text-6xl">
           Every page, exactly where it belongs.
-        </h1>"
+        </h1>
         <p className="mx-auto mt-5 max-w-xl text-lg text-ink-soft">
-          Merge, split, and reorganize PDFs in a few clicks. No account, no watermark, nothing kept longer than it takes to process.
+          Merge, split, and reorganize PDFs in a few clicks. Sign in to keep your generated files in one place.
         </p>
       </section>
 

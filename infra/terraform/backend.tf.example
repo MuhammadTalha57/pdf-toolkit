@@ -1,0 +1,11 @@
+# Copy to backend.tf (not .example) to keep Terraform state in S3.
+# The bucket and DynamoDB lock table must exist before `terraform init`.
+terraform {
+  backend "s3" {
+    bucket         = "REPLACE-with-your-terraform-state-bucket"
+    key            = "pdf-toolkit/prod/terraform.tfstate"
+    region         = "us-east-1"
+    dynamodb_table = "pdf-toolkit-terraform-locks"
+    encrypt        = true
+  }
+}
