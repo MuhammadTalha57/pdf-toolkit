@@ -1,16 +1,12 @@
-import {PDFDocument} from "pdf-lib"
+import { PDFDocument } from "pdf-lib";
 
-export default async function readPDFFromURL(url: string): Promise<PDFDocument | null> {
+export default async function readPDFFromBuffer(
+    buffer: Buffer | Uint8Array,
+): Promise<PDFDocument | null> {
     try {
-        const response = await fetch(url);
-
-        const arrayBuffer = await response.arrayBuffer();
-
-        const pdfDoc = await PDFDocument.load(arrayBuffer);
-
-        return pdfDoc;
+        return await PDFDocument.load(buffer);
     } catch (error) {
-        console.error(`Error readin the PDF from URL: ${url}`, error);
+        console.error("Error reading PDF from buffer:", error);
         return null;
     }
 }

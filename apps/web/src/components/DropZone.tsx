@@ -3,7 +3,7 @@
 import { useCallback, useRef, useState } from "react";
 import { UploadCloud } from "lucide-react";
 
-const MAX_FILE_SIZE_BYTES = 4 * 1024 * 1024; // stays under Vercel's serverless body limit
+const MAX_FILE_SIZE_BYTES = 10 * 1024 * 1024;
 
 type DropzoneProps = {
   multiple?: boolean;
@@ -34,7 +34,7 @@ export default function Dropzone({
       const tooLarge = files.find((f) => f.size > MAX_FILE_SIZE_BYTES);
       if (tooLarge) {
         setError(
-          `"${tooLarge.name}" is over the 4MB limit for this demo. Try a smaller file.`,
+          `"${tooLarge.name}" is over the 10MB limit. Try a smaller file.`,
         );
         return;
       }
@@ -83,7 +83,7 @@ export default function Dropzone({
                 : "Drop a PDF here, or click to browse")}
           </p>
           <p className="mt-1 text-sm text-ink-soft">
-            Up to 4MB per file · PDF only
+            Up to 10MB per file · PDF only
           </p>
         </div>
         <input

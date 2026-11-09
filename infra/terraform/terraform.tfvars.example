@@ -1,0 +1,20 @@
+# Copy to terraform.tfvars and adjust as needed.
+aws_region  = "us-east-1"
+project     = "pdf-toolkit"
+environment = "prod"
+
+desired_count    = 2
+min_count        = 1
+max_count        = 4
+db_instance_class = "db.t4g.micro"
+
+# Keep this false for an HTTP-only demo ALB. Set true only after configuring
+# certificate_arn so the browser will send the auth cookie over HTTPS.
+cookie_secure = false
+
+# Optional: enable HTTPS with an ACM certificate (must be in the same region).
+# certificate_arn = "arn:aws:acm:us-east-1:123456789012:certificate/..."
+
+# Optional: use an existing GitHub OIDC provider instead of creating one.
+# create_github_oidc      = false
+# github_oidc_provider_arn = "arn:aws:iam::123456789012:oidc-provider/token.actions.githubusercontent.com"

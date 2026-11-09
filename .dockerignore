@@ -1,0 +1,15 @@
+**/node_modules
+**/.next
+**/dist
+**/build
+.git
+.gitignore
+.turbo
+**/.env
+**/.env.*
+CEA
+docs
+*.pdf
+README.md
+npm-debug.log*
+opencode-session.json

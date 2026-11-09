@@ -1,92 +1,137 @@
+const API_BASE_URL = process.env.NEXT_PUBLIC_API_BASE_URL ?? "/api";
 
+export class ApiError extends Error {
+    status: number;
 
-const API_BASE_URL = process.env.NEXT_PUBLIC_API_BASE_URL;
-
-if(!API_BASE_URL) {
-    console.warn("NEXT_PUBLIC_API_BASE_URL is not set. API calls will fail until it is configured.");
+    constructor(message: string, status: number) {
+        super(message);
+        this.name = "ApiError";
+        this.status = status;
+    }
 }
-
 
 async function parseErrorMessage(response: Response): Promise<string> {
     try {
-        const body = await response.json();
-        if(typeof body?.error === "string") return body.error;
-    } catch(error) {
-        // Response wasn't json
+        const body = (await response.json()) as { error?: unknown };
+        if (typeof body.error === "string") return body.error;
+    } catch {
+        // Response wasn't JSON.
     }
     return `Request failed with status ${response.status}`;
 }
 
+async function request<T>(path: string, init: RequestInit = {}): Promise<T> {
+    const response = await fetch(`${API_BASE_URL}${path}`, {
+        credentials: "include",
+        ...init,
+    });
 
-export type OrganizeOp = {type: "page", sourceIndex: number} | {type: "blank"};
+    if (!response.ok) {
+        throw new ApiError(await parseErrorMessage(response), response.status);
+    }
 
+    return (await response.json()) as T;
+}
 
-export async function uploadPDF(file: File): Promise<string> {
+function jsonRequest(body: unknown): RequestInit {
+    return {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(body),
+    };
+}
+
+export type User = {
+    id: string;
+    email: string;
+};
+
+export async function signup(email: string, password: string): Promise<User> {
+    const data = await request<{ user: User }>("/auth/signup", jsonRequest({ email, password }));
+    return data.user;
+}
+
+export async function login(email: string, password: string): Promise<User> {
+    const data = await request<{ user: User }>("/auth/login", jsonRequest({ email, password }));
+    return data.user;
+}
+
+export async function logout(): Promise<void> {
+    await request<{ message: string }>("/auth/logout", { method: "POST" });
+}
+
+export async function getMe(): Promise<User> {
+    const data = await request<{ user: User }>("/auth/me");
+    return data.user;
+}
+
+export type OrganizeOp = { type: "page"; sourceIndex: number } | { type: "blank" };
+
+export type UploadedDocument = {
+    documentId: string;
+    fileName: string;
+    pageCount: number;
+};
+
+export async function uploadPDF(file: File): Promise<UploadedDocument> {
     const formData = new FormData();
     formData.append("file", file);
 
-    const response = await fetch(`${API_BASE_URL}/pdf/upload`, {
+    return request<UploadedDocument>("/pdf/upload", {
         method: "POST",
         body: formData,
     });
-
-    if(!response.ok) {
-        throw new Error(await parseErrorMessage(response));
-    }
-
-    const data = (await response.json()) as {url: string};
-    return data.url;
 }
 
-
-export async function uploadPDFs(files: File[]): Promise<string[]> {
-    return Promise.all(files.map((file)=> uploadPDF(file)));
+export async function uploadPDFs(files: File[]): Promise<UploadedDocument[]> {
+    return Promise.all(files.map((file) => uploadPDF(file)));
 }
 
+export type OperationResult = {
+    documentId: string;
+    fileName: string;
+    pageCount?: number;
+};
 
-export async function mergePDFs(urls: string[]): Promise<string> {
-    const response = await fetch(`${API_BASE_URL}/pdf/merge`, {
-        method: "POST",
-        headers: {"Content-Type": "application/json"},
-        body: JSON.stringify({urls}),
-    });
-
-    if(!response.ok) {
-        throw new Error(await parseErrorMessage(response));
-    }
-
-    const data = (await response.json()) as {url: string};
-    return data.url;
+export async function mergePDFs(documentIds: string[]): Promise<OperationResult> {
+    return request<OperationResult>("/pdf/merge", jsonRequest({ documentIds }));
 }
 
+export type SplitResult = {
+    documentIds: string[];
+    fileNames: string[];
+};
 
-export async function splitPDF(url: string, splits: [number, number][][]): Promise<string[]> {
-    const response = await fetch(`${API_BASE_URL}/pdf/split`, {
-        method: "POST",
-        headers: {"Content-Type": "application/json"},
-        body: JSON.stringify({url, splits}),
-    })
-
-    if(!response.ok) {
-        throw new Error(await parseErrorMessage(response));
-    }
-
-    const data = (await response.json()) as {urls: string[]};
-    return data.urls;
+export async function splitPDF(
+    documentId: string,
+    splits: [number, number][][],
+): Promise<SplitResult> {
+    return request<SplitResult>("/pdf/split", jsonRequest({ documentId, splits }));
 }
 
-export async function organizePDF(url: string, operations: OrganizeOp[]): Promise<string> {
-    const response = await fetch(`${API_BASE_URL}/pdf/organize`, {
-        method: "POST",
-        headers: {"Content-Type": "application/json"},
-        body: JSON.stringify({url, operations}),
-    });
+export async function organizePDF(
+    documentId: string,
+    operations: OrganizeOp[],
+): Promise<OperationResult> {
+    return request<OperationResult>("/pdf/organize", jsonRequest({ documentId, operations }));
+}
 
+export type DocumentKind = "upload" | "merge" | "split" | "organize";
 
-    if(!response.ok) {
-        throw new Error(await parseErrorMessage(response));
-    }
-    
-    const data = (await response.json()) as {url: string};
-    return data.url;
+export type DocumentSummary = {
+    id: string;
+    kind: DocumentKind;
+    originalName: string;
+    sizeBytes: number;
+    pageCount: number | null;
+    createdAt: string;
+};
+
+export async function listDocuments(): Promise<DocumentSummary[]> {
+    const data = await request<{ documents: DocumentSummary[] }>("/documents");
+    return data.documents;
+}
+
+export function documentDownloadUrl(documentId: string): string {
+    return `${API_BASE_URL}/documents/${encodeURIComponent(documentId)}/download`;
 }
