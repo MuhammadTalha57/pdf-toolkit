@@ -39,3 +39,6 @@ yarn-error.log*
 
 # Local server
 apps/api/src/server.ts
+
+# Code Graph
+.codegraph
