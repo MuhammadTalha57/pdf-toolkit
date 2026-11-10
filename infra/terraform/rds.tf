@@ -43,7 +43,7 @@ resource "aws_db_instance" "main" {
   backup_retention_period    = var.db_backup_retention_days
   auto_minor_version_upgrade = true
 
-  # Course-friendly teardown: `terraform destroy` removes the DB without a
+  # Demo-friendly teardown: `terraform destroy` removes the DB without a
   # final snapshot. Flip both for a real production database.
   skip_final_snapshot = true
   deletion_protection = false

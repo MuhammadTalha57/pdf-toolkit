@@ -7,7 +7,7 @@
 **/.env.*
 .git
 .github
-CEA
+docs
 infra
 scripts
 *.md

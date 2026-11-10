@@ -31,13 +31,13 @@ infra/terraform/      All AWS infrastructure as code
 scripts/              push-images.sh / .ps1 — first image push to ECR
 .github/workflows/    ci-cd.yml — build, test, push to ECR, deploy to ECS
 docs/DEPLOYMENT.md    Step-by-step deployment guide (start here)
-CEA/                  Course deliverables: report, cost estimate, diagram, evidence
+docs/architecture/    Architecture diagram (draw.io source + PNG/SVG)
 docker-compose.yml    Full stack locally (PostgreSQL + MinIO + API + web)
 ```
 
 ## Architecture
 
-![AWS architecture](CEA/architecture/architecture.svg)
+![AWS architecture](docs/architecture/architecture.png)
 
 - A browser talks only to the **ALB** (public subnets). The ALB forwards to the
   **web** tasks in the private subnets.
@@ -51,8 +51,9 @@ docker-compose.yml    Full stack locally (PostgreSQL + MinIO + API + web)
 - **GitHub Actions** authenticates to AWS with OIDC (no stored keys), pushes
   images to **ECR** and rolls the ECS services.
 
-Design rationale, security controls and the NFR analysis are in
-[`CEA/report/latex/main.tex`](CEA/report/latex/main.tex).
+The diagram source is [`docs/architecture/architecture.drawio`](docs/architecture/architecture.drawio)
+(open it at [app.diagrams.net](https://app.diagrams.net) to edit). Running the
+stack costs roughly $3–4 per day; destroy it when you're not using it.
 
 ## Run locally
 

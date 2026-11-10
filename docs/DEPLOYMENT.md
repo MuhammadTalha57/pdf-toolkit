@@ -230,8 +230,8 @@ open **History**, and download a result. The API creates its database tables
 automatically on first start.
 
 > Use the `http://` URL exactly as printed. The demo load balancer has no TLS
-> certificate, so the login cookie is sent over HTTP (see the limitations in
-> the report).
+> certificate, so the login cookie is sent over HTTP. For real use, add an ACM
+> certificate and an HTTPS listener, then set `COOKIE_SECURE=true`.
 
 ## 9. Connect GitHub Actions
 
@@ -316,30 +316,6 @@ aws ec2 describe-nat-gateways --filter Name=state,Values=available --query "NatG
 ```
 
 All three should return empty lists.
-
----
-
-## Evidence to capture (CEA deliverable 2)
-
-Take these after step 10. Never screenshot an SSM parameter with its value
-shown.
-
-| # | Where | What to show |
-|---|---|---|
-| 1 | VPC → Your VPCs / Subnets | `10.0.0.0/16`, 2 public + 2 private subnets in 2 AZs |
-| 2 | VPC → Route tables | public → IGW, private → NAT + S3 endpoint |
-| 3 | VPC → NAT gateways, Internet gateways | NAT in a public subnet, IGW attached |
-| 4 | EC2 → Security groups | the four groups and their inbound rules (ALB → web → api → RDS) |
-| 5 | EC2 → Load balancers, Target groups | internet-facing ALB in 2 AZs; web targets healthy |
-| 6 | ECS → Cluster → Services | web and api running; api with Service Connect, no load balancer |
-| 7 | ECS → Service → Auto Scaling | min 1 / max 2, CPU target 60 % |
-| 8 | ECS → Task definitions | images from ECR, secrets from SSM (names only) |
-| 9 | ECR → Repositories | both repos with `latest` + SHA tags and scan results |
-| 10 | RDS → Databases | PostgreSQL 16, private, encrypted, in the private subnets |
-| 11 | S3 → Bucket | Block Public Access on, lifecycle rule, `tmp/` and `users/` objects |
-| 12 | GitHub → Actions | a green run with both jobs |
-| 13 | Browser | the app at the ALB URL: signup, a merge result, history |
-| 14 | CloudWatch → Log groups | `/ecs/pdf-toolkit-prod/web` and `/api` |
 
 ---
 

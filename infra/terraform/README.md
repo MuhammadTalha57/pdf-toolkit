@@ -72,6 +72,6 @@ terraform destroy               # delete everything
   an S3 backend with locking.
 - `desired_count` is ignored after creation because the autoscaler owns it.
 - The RDS instance skips the final snapshot and has deletion protection off so
-  the course stack can be destroyed cleanly. Change both for real data.
+  the demo stack can be destroyed cleanly. Change both for real data.
 - The GitHub OIDC identity provider is looked up, not created: it is
   account-wide and created once (deployment guide step 3.3).
