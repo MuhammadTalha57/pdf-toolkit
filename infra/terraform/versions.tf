@@ -12,7 +12,18 @@ terraform {
     }
   }
 
-  # Local state is used by default for this course project. For a shared or
-  # production setup, copy backend.tf.example to backend.tf, create the bucket
-  # and lock table, then run `terraform init -migrate-state`.
+  # State is stored locally (terraform.tfstate, git-ignored). That is enough for
+  # a single operator. For a team, move it to an S3 backend with locking.
+}
+
+provider "aws" {
+  region = var.aws_region
+
+  default_tags {
+    tags = {
+      Project     = var.project
+      Environment = var.environment
+      ManagedBy   = "terraform"
+    }
+  }
 }

@@ -1,122 +1,77 @@
-# AWS infrastructure (Terraform)
+# Infrastructure (Terraform)
 
-This directory provisions the three-tier deployment:
+Everything the application needs in AWS, in one root module (64 resources).
+For the full first-time procedure see **[docs/DEPLOYMENT.md](../../docs/DEPLOYMENT.md)**.
 
-- **Web tier:** Next.js on ECS Fargate, behind a public Application Load Balancer.
-- **App tier:** Express API on ECS Fargate, reachable only from the web tier via
-  ECS Service Connect (`http://api:3000`).
-- **Data tier:** RDS PostgreSQL in private subnets, plus an S3 bucket for PDFs.
+## Files
 
-The API and web tasks run in private subnets. Only the ALB has a public address.
+| File | Contents |
+|---|---|
+| `versions.tf` | Terraform/provider versions, AWS provider with default tags |
+| `variables.tf` | All inputs (see below) |
+| `locals.tf` | Naming, AZ selection, image URIs, the database URL |
+| `network.tf` | VPC, 2 public + 2 private subnets, IGW, NAT gateway, route tables, S3 gateway endpoint |
+| `security.tf` | Security groups per tier and their rules |
+| `alb.tf` | Application Load Balancer, web target group, HTTP listener |
+| `ecs.tf` | Cluster, Service Connect namespace, log groups, task definitions, services, autoscaling |
+| `ecr.tf` | `web` and `api` repositories with scan-on-push and a keep-10 lifecycle |
+| `rds.tf` | PostgreSQL 16 instance, subnet group, generated secrets in SSM |
+| `s3.tf` | Private files bucket, public access block, `tmp/` expiry, TLS-only policy |
+| `iam.tf` | ECS execution role, API task role, GitHub Actions OIDC deploy role |
+| `outputs.tf` | App URL, ECR URLs, deploy role ARN, names |
 
-## Prerequisites
+## Resources at a glance
 
-- Terraform >= 1.6
-- AWS credentials with permission to create VPC, ECS, ECR, RDS, S3, IAM, SSM,
-  CloudWatch, and ELB resources
-- Docker (to build and push the two images)
+| Layer | Resources |
+|---|---|
+| Network | VPC `10.0.0.0/16`; public `10.0.0.0/24`, `10.0.1.0/24`; private `10.0.10.0/24`, `10.0.11.0/24`; IGW; 1 NAT gateway + EIP; public and private route tables; S3 gateway endpoint |
+| Load balancing | Internet-facing ALB (2 AZs), target group `web` (IP targets, health check `/`), listener :80 |
+| Compute | ECS cluster; Fargate services `web` and `api` (0.25 vCPU / 0.5 GB each) in private subnets; Service Connect; CPU target-tracking autoscaling, 1–2 tasks per service |
+| Data | RDS PostgreSQL 16 `db.t4g.micro`, 20 GiB gp3, encrypted, private, TLS enforced; S3 bucket |
+| Registry | ECR `pdf-toolkit-prod-web`, `pdf-toolkit-prod-api` |
+| Security | 4 security groups (ALB → web → api → RDS); SSM SecureString `database-url`, `jwt-secret`; 3 IAM roles |
+| Logging | CloudWatch log groups `/ecs/pdf-toolkit-prod/{web,api}` (7 days) |
 
-## 1. Apply the infrastructure
+## Variables
 
-```bash
-cd infra/terraform
-cp terraform.tfvars.example terraform.tfvars
-terraform init
-terraform fmt -recursive
-terraform validate
-terraform plan
-terraform apply
-```
+| Name | Default | Notes |
+|---|---|---|
+| `aws_region` | `us-east-1` | Also hard-coded in the CI workflow `env` |
+| `project`, `environment` | `pdf-toolkit`, `prod` | Resource prefix `pdf-toolkit-prod`; CI uses these names |
+| `github_repository` | `MuhammadTalha57/pdf-toolkit` | Only its `main` branch may assume the deploy role |
+| `vpc_cidr` | `10.0.0.0/16` | |
+| `allowed_http_cidrs` | `["0.0.0.0/0"]` | Who may reach the ALB |
+| `image_tag` | `latest` | Set to a commit SHA to pin/roll back |
+| `min_tasks`, `max_tasks` | `1`, `2` | Per service |
+| `cpu_target_percent` | `60` | Autoscaling target |
+| `web_cpu`, `web_memory`, `api_cpu`, `api_memory` | `256`, `512` | Fargate sizes |
+| `max_upload_mb` | `10` | |
+| `log_retention_days` | `7` | |
+| `db_instance_class` | `db.t4g.micro` | |
+| `db_allocated_storage` | `20` | GiB |
+| `db_name`, `db_username` | `pdf_toolkit`, `pdfapp` | Password is generated |
+| `db_multi_az` | `false` | `true` adds a standby in a second AZ |
+| `db_backup_retention_days` | `1` | |
 
-Save the outputs:
+If you change `project`, `environment` or `aws_region`, update the matching
+names in the `env:` block of `.github/workflows/ci-cd.yml`.
 
-```bash
-terraform output
-terraform output -raw ecr_api_repository_url
-terraform output -raw ecr_web_repository_url
-terraform output -raw app_url
-terraform output -raw github_deploy_role_arn
-```
-
-## 2. Build and push the first images
-
-ECS starts with the `latest` tag. Build both images and push them before the
-services can become healthy.
-
-```bash
-ACCOUNT_ID=$(aws sts get-caller-identity --query Account --output text)
-REGISTRY="$ACCOUNT_ID.dkr.ecr.us-east-1.amazonaws.com"
-
-aws ecr get-login-password --region us-east-1 \
-  | docker login --username AWS --password-stdin "$REGISTRY"
-
-# Run from the repository root (context must include package.json and packages/).
-docker build -f apps/api/Dockerfile -t "$REGISTRY/pdf-toolkit-prod-api:latest" .
-docker push "$REGISTRY/pdf-toolkit-prod-api:latest"
-
-docker build -f apps/web/Dockerfile \
-  --build-arg API_INTERNAL_URL=http://api:3000 \
-  --build-arg NEXT_PUBLIC_API_BASE_URL=/api \
-  -t "$REGISTRY/pdf-toolkit-prod-web:latest" .
-docker push "$REGISTRY/pdf-toolkit-prod-web:latest"
-```
-
-If the services started before the images existed, restart them:
+## Everyday commands
 
 ```bash
-aws ecs update-service --cluster pdf-toolkit-prod --service pdf-toolkit-prod-api --force-new-deployment
-aws ecs update-service --cluster pdf-toolkit-prod --service pdf-toolkit-prod-web --force-new-deployment
+terraform plan                  # preview changes
+terraform apply                 # apply changes
+terraform output                # show outputs
+terraform destroy               # delete everything
 ```
 
-Open the `app_url` output. Sign up, upload a PDF, merge/split/organize it, and
-check the per-user history before downloading the result.
+## Notes
 
-## 3. Enable GitHub Actions deployments
-
-The stack creates an IAM OIDC role that trusts
-`repo:MuhammadTalha57/pdf-toolkit` on `main` and pull requests. Add the role ARN
-as a GitHub repository variable:
-
-- **Settings -> Secrets and variables -> Actions -> Variables**
-- Name: `AWS_ROLE_ARN`
-- Value: `terraform output -raw github_deploy_role_arn`
-
-The workflow `.github/workflows/ci-cd.yml` then:
-
-1. Installs dependencies, type-checks, tests the API, and builds both apps.
-2. On `main`, assumes the role with OIDC, pushes both images, and forces new ECS
-   deployments.
-
-No long-lived AWS access keys are stored in GitHub.
-
-## 4. HTTPS (optional)
-
-The default listener is HTTP on port 80. Browsers will not send the auth cookie
-over HTTP if `COOKIE_SECURE=true`, so the default ECS task sets
-`COOKIE_SECURE=false`.
-
-To use HTTPS:
-
-1. Request/import an ACM certificate in the same region.
-2. Set `certificate_arn` in `terraform.tfvars`.
-3. Set `cookie_secure = true`.
-4. `terraform apply`.
-
-The ALB then redirects port 80 to 443 and serves HTTPS on 443.
-
-## 5. Remote state (recommended for a team)
-
-Copy `backend.tf.example` to `backend.tf`, replace the bucket/table names, create
-the bucket and DynamoDB table, then run `terraform init -migrate-state`.
-
-Local state contains the generated database password and JWT secret. Never commit
-`terraform.tfstate` or `terraform.tfstate.backup`.
-
-## 6. Teardown
-
-```bash
-terraform destroy
-```
-
-The defaults (`s3_force_destroy = true`, `rds_skip_final_snapshot = true`) make
-the course deployment easy to remove. Remove those defaults for production data.
+- **State** is local (`terraform.tfstate`, git-ignored) and contains the
+  generated DB password and JWT secret. Keep it private. For a team, move it to
+  an S3 backend with locking.
+- `desired_count` is ignored after creation because the autoscaler owns it.
+- The RDS instance skips the final snapshot and has deletion protection off so
+  the course stack can be destroyed cleanly. Change both for real data.
+- The GitHub OIDC identity provider is looked up, not created: it is
+  account-wide and created once (deployment guide step 3.3).

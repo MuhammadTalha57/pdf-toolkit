@@ -1,130 +1,106 @@
 # PDF Toolkit
 
-A small, focused set of PDF tools — merge, split, and reorganize pages — built as a monorepo with a Next.js frontend and an Express backend deployed as serverless functions on Vercel. Built as a portfolio project to demonstrate a production-shaped MERN stack (MongoDB is reserved for a future feature; see [Known limitations](#known-limitations)).
+Merge, split and reorganise PDF files in the browser — deployed as a
+containerised **three-tier application on AWS** with Terraform and a GitHub
+Actions CI/CD pipeline.
 
-**Live app:** https://pdf-toolkit-web-orcin.vercel.app/
-
-## What it does
-
-- **Merge** — combine multiple PDFs into one, in an order you choose.
-- **Split** — extract page ranges from a PDF into one or more new files.
-- **Organize** — reorder pages by drag and drop, remove pages, or insert blank pages.
-
-All processing happens on request. Files are not stored beyond what's needed to complete the operation.
-
-## Tech stack
-
-| Layer | Technology |
+| Tier | What runs there |
 |---|---|
-| Frontend | Next.js (App Router), React, Tailwind CSS v4 |
-| Backend | Express, deployed as Vercel serverless functions |
-| PDF processing | pdf-lib (server), pdfjs-dist (client-side page previews) |
-| File storage | Vercel Blob |
-| Monorepo tooling | npm workspaces, Turborepo |
-| Testing | Vitest |
-| Language | TypeScript throughout |
+| **Web** | Next.js app (`apps/web`) in a Docker container on ECS Fargate, behind an Application Load Balancer |
+| **Application** | Express API (`apps/api`) in a Docker container on ECS Fargate, reachable only from the web tier |
+| **Database** | Amazon RDS for PostgreSQL 16 (users and document history) |
+| **Files** | Amazon S3 (uploaded and generated PDFs) |
+
+## Features
+
+- **Merge** several PDFs in a chosen order.
+- **Split** a PDF into page ranges.
+- **Organize** pages: reorder by drag and drop, delete, insert blank pages.
+- Accounts (email + password) with a per-user **history** of results to download again.
+
+Page previews are rendered in the browser with `pdfjs-dist`; the actual PDF
+work is done by the API with `pdf-lib`.
+
+## Repository layout
+
+```
+apps/
+  web/                Next.js 16 frontend (proxies /api/* to the API)
+  api/                Express 5 API: auth, PDF operations, history
+infra/terraform/      All AWS infrastructure as code
+scripts/              push-images.sh / .ps1 — first image push to ECR
+.github/workflows/    ci-cd.yml — build, test, push to ECR, deploy to ECS
+docs/DEPLOYMENT.md    Step-by-step deployment guide (start here)
+CEA/                  Course deliverables: report, cost estimate, diagram, evidence
+docker-compose.yml    Full stack locally (PostgreSQL + MinIO + API + web)
+```
 
 ## Architecture
 
-The frontend and backend are deployed as **two separate Vercel projects** from this one repository. This keeps the backend a genuine, independently deployable REST API rather than a set of Next.js API routes, and it's the reason a few things are structured the way they are.
+![AWS architecture](CEA/architecture/architecture.svg)
 
-The core constraint shaping the design: Vercel serverless functions cap request/response bodies at roughly 4.5MB, and the filesystem is stateless between invocations. This ruled out the naive approach of streaming a PDF's raw bytes through the Express function on every request. Instead:
+- A browser talks only to the **ALB** (public subnets). The ALB forwards to the
+  **web** tasks in the private subnets.
+- The web server proxies `/api/*` to `http://api:3000` through **ECS Service
+  Connect**. The API has no public endpoint; its security group admits only the
+  web tier.
+- The API stores metadata in **RDS** (TLS, verified certificate) and file bytes
+  in **S3** (via a VPC gateway endpoint). Secrets come from **SSM Parameter
+  Store** at task start.
+- Each service autoscales on CPU between **1 and 2 tasks** (configurable).
+- **GitHub Actions** authenticates to AWS with OIDC (no stored keys), pushes
+  images to **ECR** and rolls the ECS services.
 
-```
-Browser                          Express (serverless)           Vercel Blob
-   |                                    |                            |
-   | 1. POST /pdf/upload (multipart)    |                            |
-   |----------------------------------->|                            |
-   |                                    | 2. upload bytes            |
-   |                                    |--------------------------->|
-   |                                    | 3. public URL              |
-   |                                    |<---------------------------|
-   | 4. { url }                         |                            |
-   |<-----------------------------------|                            |
-   |                                    |                            |
-   | 5. POST /pdf/merge { urls }        |                            |
-   |----------------------------------->|                            |
-   |                                    | 6. download input(s)       |
-   |                                    |<---------------------------|
-   |                                    | 7. transform with pdf-lib  |
-   |                                    | 8. upload result           |
-   |                                    |--------------------------->|
-   |                                    | 9. result URL              |
-   |                                    |<---------------------------|
-   | 10. { url }                        |                            |
-   |<-----------------------------------|                            |
-```
+Design rationale, security controls and the NFR analysis are in
+[`CEA/report/technical-report.md`](CEA/report/technical-report.md).
 
-The upload step keeps large file transfers out of the JSON request bodies that the merge/split/organize endpoints deal with — those only ever pass around small blob URLs and instructions. Page previews and drag-to-reorder in the "Organize" tool are rendered entirely client-side with `pdfjs-dist`, so browsing a file's pages costs no server round trip.
+## Run locally
 
-## Directory structure
-
-```
-pdf-toolkit/
-├── apps/
-│   ├── web/            # Next.js frontend — see apps/web/README.md
-│   └── api/             # Express backend — see apps/api/README.md
-├── packages/
-│   ├── ui/               # Shared React component stubs (scaffolded, not yet used by web)
-│   ├── shared-types/     # Reserved for types shared between web and api
-│   ├── eslint-config/    # Shared ESLint configuration
-│   └── typescript-config/# Shared tsconfig bases
-├── turbo.json
-├── package.json          # workspaces root
-└── README.md
-```
-
-Each app is independently deployable and has its own README with setup details specific to it:
-
-- [`apps/web/README.md`](./apps/web/README.md) — frontend setup, pages, environment variables
-- [`apps/api/README.md`](./apps/api/README.md) — API reference, environment variables, deployment notes
-
-## Getting started
-
-Requires Node.js 18+ and npm.
+Requires Docker.
 
 ```bash
-git clone https://github.com/MuhammadTalha57/pdf-toolkit.git
-cd pdf-toolkit
+docker compose up --build
+```
+
+Open http://localhost:3000. MinIO stands in for S3 (console at
+http://localhost:9001, `minioadmin` / `minioadmin`). Stop with
+`docker compose down -v`.
+
+### Without Docker (for development)
+
+Requires Node 20+, plus PostgreSQL and MinIO from Compose:
+
+```bash
 npm install
+docker compose up -d postgres minio minio-init
+cp apps/api/.env.example apps/api/.env   # then set S3_ENDPOINT=http://localhost:9000 and the minioadmin keys
+npm run dev                              # web on :3000, API on :4000
 ```
 
-`npm install` at the root installs dependencies for every workspace (`apps/web`, `apps/api`, and `packages/*`) in one pass, via npm workspaces.
-
-Each app needs its own environment variables before it will run — see the app-specific READMEs linked above. In short:
-- `apps/web` needs `NEXT_PUBLIC_API_BASE_URL` pointing at the backend.
-- `apps/api` needs `FRONTEND_URL` for CORS and `BLOB_READ_WRITE_TOKEN` for Vercel Blob access.
-
-To run both apps in development at once from the root:
+### Checks
 
 ```bash
-npm run dev
+npm run check-types
+npm test
+npm run build
 ```
 
-This runs Turborepo's `dev` task across all workspaces that define one. To run a single app, use Turborepo's filter flag, e.g. `npx turbo run dev --filter=web`, or `cd` into the app directory directly.
+## Deploy to AWS
 
-## Building and type-checking
+Follow **[docs/DEPLOYMENT.md](docs/DEPLOYMENT.md)**. In short:
 
 ```bash
-npm run build         # turbo run build — builds every buildable workspace
-npm run check-types    # turbo run check-types
-npm run lint           # turbo run lint
+cd infra/terraform && terraform init
+terraform apply -target=aws_ecr_repository.repo   # registries first
+cd ../.. && ./scripts/push-images.sh               # first images (Windows: .\scripts\push-images.ps1)
+cd infra/terraform && terraform apply              # everything else
 ```
 
-## Deployment
+After that, every push to `main` is tested and deployed automatically.
+Remove everything with `terraform destroy`.
 
-Both apps are deployed to Vercel as separate projects from this repository:
+## Tech stack
 
-- **web** — Root Directory set to `apps/web`, deployed with Vercel's standard Next.js framework preset.
-- **api** — Root Directory set to `apps/api`, deployed as a serverless function via an explicit `vercel.json` (see [`apps/api/README.md`](./apps/api/README.md) for why this is explicit rather than framework-auto-detected).
-
-Because they're separate projects with separate domains, the frontend calls the backend over CORS rather than same-origin requests.
-
-## Known limitations
-
-These are intentional scope decisions for a time-boxed portfolio project, not oversights:
-
-- **No authentication or per-user history.** Every request is anonymous and stateless. `mongoose` is listed as a dependency in `apps/api` in anticipation of this, but no models or connection logic exist yet.
-- **No page rotation.** The "Organize" tool supports reordering, deleting, and inserting blank pages, but not rotating a page — the backend service doesn't implement it yet.
-- **4MB upload limit.** Set deliberately below Vercel's ~4.5MB serverless request body cap.
-- **PDF-to-Word/OCR/password protection are out of scope.** These typically require native binaries (LibreOffice, Tesseract, qpdf) that don't run in a serverless environment.
+Next.js 16 · React 19 · Tailwind CSS 4 · Express 5 · pdf-lib · pdfjs-dist ·
+PostgreSQL 16 · AWS SDK v3 · Vitest · Docker · Terraform · GitHub Actions ·
+AWS (VPC, ALB, ECS Fargate, ECR, RDS, S3, SSM, IAM, CloudWatch).

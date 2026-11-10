@@ -1,27 +1,30 @@
-resource "aws_service_discovery_http_namespace" "main" {
-  name        = local.name_prefix
-  description = "Service Connect namespace for ${local.name_prefix}"
-
-  tags = {
-    Name = "${local.name_prefix}-namespace"
-  }
-}
+# Two ECS Fargate services in the private subnets:
+#   web  - Next.js, registered in the ALB target group, proxies /api/* to "api"
+#   api  - Express, NOT behind the ALB; reachable only through Service Connect
+#          (DNS name "api" inside the namespace) and only from the web SG.
 
 resource "aws_ecs_cluster" "main" {
-  name = local.name_prefix
-
-  setting {
-    name  = "containerInsights"
-    value = "disabled"
-  }
-
-  tags = {
-    Name = local.name_prefix
-  }
+  name = local.name
 }
 
+# Service Connect namespace: gives the web tasks a stable "http://api:3000".
+resource "aws_service_discovery_http_namespace" "main" {
+  name = local.name
+}
+
+resource "aws_cloudwatch_log_group" "service" {
+  for_each = toset(["web", "api"])
+
+  name              = "/ecs/${local.name}/${each.key}"
+  retention_in_days = var.log_retention_days
+}
+
+# ---------------------------------------------------------------------------
+# Task definitions
+# ---------------------------------------------------------------------------
+
 resource "aws_ecs_task_definition" "api" {
-  family                   = "${local.name_prefix}-api"
+  family                   = "${local.name}-api"
   requires_compatibilities = ["FARGATE"]
   network_mode             = "awsvpc"
   cpu                      = var.api_cpu
@@ -39,23 +42,19 @@ resource "aws_ecs_task_definition" "api" {
     image     = local.api_image
     essential = true
 
-    portMappings = [{
-      name          = "api"
-      containerPort = 3000
-      hostPort      = 3000
-      protocol      = "tcp"
-    }]
+    portMappings = [{ name = "api", containerPort = 3000, protocol = "tcp" }]
 
     environment = [
       { name = "NODE_ENV", value = "production" },
       { name = "PORT", value = "3000" },
       { name = "AWS_REGION", value = var.aws_region },
       { name = "S3_BUCKET", value = aws_s3_bucket.files.bucket },
-      { name = "FRONTEND_ORIGIN", value = local.cors_origin },
-      { name = "COOKIE_SECURE", value = tostring(var.cookie_secure) },
+      { name = "FRONTEND_ORIGIN", value = local.app_url },
+      { name = "COOKIE_SECURE", value = "false" }, # ALB serves plain HTTP
       { name = "MAX_UPLOAD_MB", value = tostring(var.max_upload_mb) },
     ]
 
+    # Injected by ECS from SSM at start-up; never stored in the image.
     secrets = [
       { name = "DATABASE_URL", valueFrom = aws_ssm_parameter.database_url.arn },
       { name = "JWT_SECRET", valueFrom = aws_ssm_parameter.jwt_secret.arn },
@@ -72,26 +71,21 @@ resource "aws_ecs_task_definition" "api" {
     logConfiguration = {
       logDriver = "awslogs"
       options = {
-        "awslogs-group"         = aws_cloudwatch_log_group.api.name
+        "awslogs-group"         = aws_cloudwatch_log_group.service["api"].name
         "awslogs-region"        = var.aws_region
         "awslogs-stream-prefix" = "api"
       }
     }
   }])
-
-  tags = {
-    Name = "${local.name_prefix}-api"
-  }
 }
 
 resource "aws_ecs_task_definition" "web" {
-  family                   = "${local.name_prefix}-web"
+  family                   = "${local.name}-web"
   requires_compatibilities = ["FARGATE"]
   network_mode             = "awsvpc"
   cpu                      = var.web_cpu
   memory                   = var.web_memory
   execution_role_arn       = aws_iam_role.ecs_execution.arn
-  task_role_arn            = aws_iam_role.web_task.arn
 
   runtime_platform {
     operating_system_family = "LINUX"
@@ -103,18 +97,12 @@ resource "aws_ecs_task_definition" "web" {
     image     = local.web_image
     essential = true
 
-    portMappings = [{
-      name          = "web"
-      containerPort = 3000
-      hostPort      = 3000
-      protocol      = "tcp"
-    }]
+    portMappings = [{ name = "web", containerPort = 3000, protocol = "tcp" }]
 
     environment = [
       { name = "NODE_ENV", value = "production" },
       { name = "PORT", value = "3000" },
       { name = "HOSTNAME", value = "0.0.0.0" },
-      { name = "API_INTERNAL_URL", value = "http://api:3000" },
     ]
 
     healthCheck = {
@@ -128,32 +116,28 @@ resource "aws_ecs_task_definition" "web" {
     logConfiguration = {
       logDriver = "awslogs"
       options = {
-        "awslogs-group"         = aws_cloudwatch_log_group.web.name
+        "awslogs-group"         = aws_cloudwatch_log_group.service["web"].name
         "awslogs-region"        = var.aws_region
         "awslogs-stream-prefix" = "web"
       }
     }
   }])
-
-  tags = {
-    Name = "${local.name_prefix}-web"
-  }
 }
 
-resource "aws_ecs_service" "api" {
-  name            = "${local.name_prefix}-api"
-  cluster         = aws_ecs_cluster.main.id
-  task_definition = aws_ecs_task_definition.api.arn
-  desired_count   = var.desired_count
-  launch_type     = "FARGATE"
+# ---------------------------------------------------------------------------
+# Services
+# ---------------------------------------------------------------------------
 
-  platform_version        = "LATEST"
-  enable_ecs_managed_tags = true
-  propagate_tags          = "SERVICE"
-  wait_for_steady_state   = true
+resource "aws_ecs_service" "api" {
+  name                  = "${local.name}-api"
+  cluster               = aws_ecs_cluster.main.id
+  task_definition       = aws_ecs_task_definition.api.arn
+  desired_count         = var.min_tasks
+  launch_type           = "FARGATE"
+  wait_for_steady_state = true
 
   network_configuration {
-    subnets          = aws_subnet.app[*].id
+    subnets          = aws_subnet.private[*].id
     security_groups  = [aws_security_group.api.id]
     assign_public_ip = false
   }
@@ -173,37 +157,28 @@ resource "aws_ecs_service" "api" {
     }
   }
 
+  # A failing release is rolled back automatically.
   deployment_circuit_breaker {
     enable   = true
     rollback = true
   }
 
-  tags = {
-    Name = "${local.name_prefix}-api"
-  }
-
-  timeouts {
-    create = "15m"
-    update = "15m"
-    delete = "15m"
+  lifecycle {
+    ignore_changes = [desired_count] # owned by the autoscaler
   }
 }
 
 resource "aws_ecs_service" "web" {
-  name            = "${local.name_prefix}-web"
-  cluster         = aws_ecs_cluster.main.id
-  task_definition = aws_ecs_task_definition.web.arn
-  desired_count   = var.desired_count
-  launch_type     = "FARGATE"
-
-  platform_version                  = "LATEST"
-  enable_ecs_managed_tags           = true
-  propagate_tags                    = "SERVICE"
+  name                              = "${local.name}-web"
+  cluster                           = aws_ecs_cluster.main.id
+  task_definition                   = aws_ecs_task_definition.web.arn
+  desired_count                     = var.min_tasks
+  launch_type                       = "FARGATE"
   wait_for_steady_state             = true
   health_check_grace_period_seconds = 60
 
   network_configuration {
-    subnets          = aws_subnet.app[*].id
+    subnets          = aws_subnet.private[*].id
     security_groups  = [aws_security_group.web.id]
     assign_public_ip = false
   }
@@ -214,6 +189,7 @@ resource "aws_ecs_service" "web" {
     container_port   = 3000
   }
 
+  # Client-only: lets the web tasks resolve "api" through Service Connect.
   service_connect_configuration {
     enabled   = true
     namespace = aws_service_discovery_http_namespace.main.arn
@@ -224,86 +200,50 @@ resource "aws_ecs_service" "web" {
     rollback = true
   }
 
-  tags = {
-    Name = "${local.name_prefix}-web"
+  lifecycle {
+    ignore_changes = [desired_count]
   }
 
-  depends_on = [aws_ecs_service.api]
+  depends_on = [aws_lb_listener.http, aws_ecs_service.api]
+}
 
-  timeouts {
-    create = "15m"
-    update = "15m"
-    delete = "15m"
+# ---------------------------------------------------------------------------
+# Autoscaling: target tracking on average CPU, between min_tasks and max_tasks
+# ---------------------------------------------------------------------------
+
+locals {
+  services = {
+    web = aws_ecs_service.web.name
+    api = aws_ecs_service.api.name
   }
 }
 
-resource "aws_appautoscaling_target" "api" {
-  max_capacity       = var.max_count
-  min_capacity       = var.min_count
-  resource_id        = "service/${aws_ecs_cluster.main.name}/${aws_ecs_service.api.name}"
-  scalable_dimension = "ecs:service:DesiredCount"
+resource "aws_appautoscaling_target" "service" {
+  for_each = local.services
+
   service_namespace  = "ecs"
+  resource_id        = "service/${aws_ecs_cluster.main.name}/${each.value}"
+  scalable_dimension = "ecs:service:DesiredCount"
+  min_capacity       = var.min_tasks
+  max_capacity       = var.max_tasks
 }
 
-resource "aws_appautoscaling_policy" "api_cpu" {
-  name               = "${local.name_prefix}-api-cpu"
+resource "aws_appautoscaling_policy" "cpu" {
+  for_each = aws_appautoscaling_target.service
+
+  name               = "${local.name}-${each.key}-cpu"
   policy_type        = "TargetTrackingScaling"
-  resource_id        = aws_appautoscaling_target.api.resource_id
-  scalable_dimension = aws_appautoscaling_target.api.scalable_dimension
-  service_namespace  = aws_appautoscaling_target.api.service_namespace
+  service_namespace  = each.value.service_namespace
+  resource_id        = each.value.resource_id
+  scalable_dimension = each.value.scalable_dimension
 
   target_tracking_scaling_policy_configuration {
-    target_value       = 60
-    scale_in_cooldown  = 300
+    target_value       = var.cpu_target_percent
     scale_out_cooldown = 60
+    scale_in_cooldown  = 300
 
     predefined_metric_specification {
       predefined_metric_type = "ECSServiceAverageCPUUtilization"
-    }
-  }
-}
-
-resource "aws_appautoscaling_target" "web" {
-  max_capacity       = var.max_count
-  min_capacity       = var.min_count
-  resource_id        = "service/${aws_ecs_cluster.main.name}/${aws_ecs_service.web.name}"
-  scalable_dimension = "ecs:service:DesiredCount"
-  service_namespace  = "ecs"
-}
-
-resource "aws_appautoscaling_policy" "web_cpu" {
-  name               = "${local.name_prefix}-web-cpu"
-  policy_type        = "TargetTrackingScaling"
-  resource_id        = aws_appautoscaling_target.web.resource_id
-  scalable_dimension = aws_appautoscaling_target.web.scalable_dimension
-  service_namespace  = aws_appautoscaling_target.web.service_namespace
-
-  target_tracking_scaling_policy_configuration {
-    target_value       = 60
-    scale_in_cooldown  = 300
-    scale_out_cooldown = 60
-
-    predefined_metric_specification {
-      predefined_metric_type = "ECSServiceAverageCPUUtilization"
-    }
-  }
-}
-
-resource "aws_appautoscaling_policy" "web_requests" {
-  name               = "${local.name_prefix}-web-requests"
-  policy_type        = "TargetTrackingScaling"
-  resource_id        = aws_appautoscaling_target.web.resource_id
-  scalable_dimension = aws_appautoscaling_target.web.scalable_dimension
-  service_namespace  = aws_appautoscaling_target.web.service_namespace
-
-  target_tracking_scaling_policy_configuration {
-    target_value       = 800
-    scale_in_cooldown  = 300
-    scale_out_cooldown = 60
-
-    predefined_metric_specification {
-      predefined_metric_type = "ALBRequestCountPerTarget"
-      resource_label         = "${aws_lb.main.arn_suffix}/${aws_lb_target_group.web.arn_suffix}"
     }
   }
 }

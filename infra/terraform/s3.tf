@@ -1,10 +1,12 @@
-resource "aws_s3_bucket" "files" {
-  bucket        = "${local.name_prefix}-files-${data.aws_caller_identity.current.account_id}"
-  force_destroy = var.s3_force_destroy
+# Private bucket for uploaded and generated PDFs. New buckets are already
+# encrypted (SSE-S3) and owner-enforced by default; public access is blocked
+# explicitly and plain-HTTP access is denied by the bucket policy.
 
-  tags = {
-    Name = "${local.name_prefix}-files"
-  }
+resource "aws_s3_bucket" "files" {
+  bucket        = "${local.name}-files-${data.aws_caller_identity.current.account_id}"
+  force_destroy = true # lets `terraform destroy` remove a non-empty bucket
+
+  tags = { Name = "${local.name}-files" }
 }
 
 resource "aws_s3_bucket_public_access_block" "files" {
@@ -16,32 +18,7 @@ resource "aws_s3_bucket_public_access_block" "files" {
   restrict_public_buckets = true
 }
 
-resource "aws_s3_bucket_ownership_controls" "files" {
-  bucket = aws_s3_bucket.files.id
-
-  rule {
-    object_ownership = "BucketOwnerEnforced"
-  }
-}
-
-resource "aws_s3_bucket_versioning" "files" {
-  bucket = aws_s3_bucket.files.id
-
-  versioning_configuration {
-    status = "Enabled"
-  }
-}
-
-resource "aws_s3_bucket_server_side_encryption_configuration" "files" {
-  bucket = aws_s3_bucket.files.id
-
-  rule {
-    apply_server_side_encryption_by_default {
-      sse_algorithm = "AES256"
-    }
-  }
-}
-
+# Raw uploads live under tmp/ and are only needed until an operation runs.
 resource "aws_s3_bucket_lifecycle_configuration" "files" {
   bucket = aws_s3_bucket.files.id
 
@@ -61,24 +38,9 @@ resource "aws_s3_bucket_lifecycle_configuration" "files" {
       days_after_initiation = 1
     }
   }
-
-  rule {
-    id     = "expire-noncurrent-versions"
-    status = "Enabled"
-
-    filter {}
-
-    noncurrent_version_expiration {
-      noncurrent_days = 30
-    }
-
-    abort_incomplete_multipart_upload {
-      days_after_initiation = 7
-    }
-  }
 }
 
-data "aws_iam_policy_document" "s3_tls_only" {
+data "aws_iam_policy_document" "files_tls_only" {
   statement {
     sid       = "DenyInsecureTransport"
     effect    = "Deny"
@@ -99,7 +61,8 @@ data "aws_iam_policy_document" "s3_tls_only" {
 }
 
 resource "aws_s3_bucket_policy" "files" {
-  bucket     = aws_s3_bucket.files.id
-  policy     = data.aws_iam_policy_document.s3_tls_only.json
+  bucket = aws_s3_bucket.files.id
+  policy = data.aws_iam_policy_document.files_tls_only.json
+
   depends_on = [aws_s3_bucket_public_access_block.files]
 }

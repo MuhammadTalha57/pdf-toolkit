@@ -1,23 +1,25 @@
+data "aws_availability_zones" "available" {
+  state = "available"
+}
+
+data "aws_caller_identity" "current" {}
+
 locals {
-  name_prefix = "${var.project}-${var.environment}"
-  azs         = slice(data.aws_availability_zones.available.names, 0, var.availability_zone_count)
+  name = "${var.project}-${var.environment}"
 
-  tags = merge(
-    {
-      Project     = var.project
-      Environment = var.environment
-      ManagedBy   = "terraform"
-    },
-    var.tags,
-  )
+  # Two AZs: enough for the ALB and RDS subnet group, and for spreading tasks.
+  azs = slice(data.aws_availability_zones.available.names, 0, 2)
 
-  alb_scheme  = var.certificate_arn != "" ? "https" : "http"
-  cors_origin = "${local.alb_scheme}://${aws_lb.main.dns_name}"
+  app_url = "http://${aws_lb.main.dns_name}"
 
-  api_image = "${aws_ecr_repository.api.repository_url}:${var.image_tag}"
-  web_image = "${aws_ecr_repository.web.repository_url}:${var.image_tag}"
+  api_image = "${aws_ecr_repository.repo["api"].repository_url}:${var.image_tag}"
+  web_image = "${aws_ecr_repository.repo["web"].repository_url}:${var.image_tag}"
 
-  github_oidc_arn = var.create_github_oidc ? aws_iam_openid_connect_provider.github[0].arn : var.github_oidc_provider_arn
-
-  database_url = "postgres://${var.db_username}:${random_password.db.result}@${aws_db_instance.main.address}:${aws_db_instance.main.port}/${var.db_name}?sslmode=require"
+  # TLS is enforced and the server certificate is verified against the AWS RDS
+  # CA bundle, which the API Dockerfile downloads to /app/rds-global-bundle.pem.
+  database_url = join("", [
+    "postgres://${var.db_username}:${random_password.db.result}",
+    "@${aws_db_instance.main.address}:${aws_db_instance.main.port}/${var.db_name}",
+    "?sslmode=verify-full&sslrootcert=/app/rds-global-bundle.pem",
+  ])
 }

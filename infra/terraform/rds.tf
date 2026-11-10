@@ -1,29 +1,18 @@
+# PostgreSQL 16 on RDS, in the private subnets, not publicly accessible.
+# RDS for PostgreSQL 15+ sets rds.force_ssl=1 by default, so unencrypted
+# connections are refused without needing a custom parameter group.
+
 data "aws_rds_engine_version" "postgres" {
   engine  = "postgres"
   version = "16"
+  latest  = true
 }
 
 resource "aws_db_subnet_group" "main" {
-  name       = "${local.name_prefix}-db-subnets"
-  subnet_ids = aws_subnet.db[*].id
+  name       = "${local.name}-db-subnets"
+  subnet_ids = aws_subnet.private[*].id
 
-  tags = {
-    Name = "${local.name_prefix}-db-subnets"
-  }
-}
-
-resource "aws_db_parameter_group" "postgres16" {
-  name   = "${local.name_prefix}-pg16"
-  family = "postgres16"
-
-  parameter {
-    name  = "rds.force_ssl"
-    value = "1"
-  }
-
-  tags = {
-    Name = "${local.name_prefix}-pg16"
-  }
+  tags = { Name = "${local.name}-db-subnets" }
 }
 
 resource "random_password" "db" {
@@ -32,7 +21,7 @@ resource "random_password" "db" {
 }
 
 resource "aws_db_instance" "main" {
-  identifier     = "${local.name_prefix}-db"
+  identifier     = "${local.name}-db"
   engine         = "postgres"
   engine_version = data.aws_rds_engine_version.postgres.version
   instance_class = var.db_instance_class
@@ -46,21 +35,46 @@ resource "aws_db_instance" "main" {
   password = random_password.db.result
   port     = 5432
 
-  vpc_security_group_ids = [aws_security_group.rds.id]
   db_subnet_group_name   = aws_db_subnet_group.main.name
-  parameter_group_name   = aws_db_parameter_group.postgres16.name
+  vpc_security_group_ids = [aws_security_group.rds.id]
   publicly_accessible    = false
   multi_az               = var.db_multi_az
 
-  backup_retention_period      = var.db_backup_retention_days
-  skip_final_snapshot          = var.rds_skip_final_snapshot
-  final_snapshot_identifier    = var.rds_skip_final_snapshot ? null : "${local.name_prefix}-db-final"
-  deletion_protection          = var.db_deletion_protection
-  auto_minor_version_upgrade   = true
-  copy_tags_to_snapshot        = true
-  performance_insights_enabled = false
+  backup_retention_period    = var.db_backup_retention_days
+  auto_minor_version_upgrade = true
 
-  tags = {
-    Name = "${local.name_prefix}-db"
+  # Course-friendly teardown: `terraform destroy` removes the DB without a
+  # final snapshot. Flip both for a real production database.
+  skip_final_snapshot = true
+  deletion_protection = false
+
+  lifecycle {
+    # Minor upgrades are applied by AWS; don't let a newer "latest" force a change.
+    ignore_changes = [engine_version]
   }
+
+  tags = { Name = "${local.name}-db" }
+}
+
+# ---------------------------------------------------------------------------
+# Application secrets (SSM Parameter Store, SecureString, encrypted with KMS).
+# Generated here, injected into the API container by ECS at start-up, and never
+# written to the image, the repository or the CI pipeline.
+# ---------------------------------------------------------------------------
+
+resource "random_password" "jwt" {
+  length  = 64
+  special = false
+}
+
+resource "aws_ssm_parameter" "database_url" {
+  name  = "/${local.name}/database-url"
+  type  = "SecureString"
+  value = local.database_url
+}
+
+resource "aws_ssm_parameter" "jwt_secret" {
+  name  = "/${local.name}/jwt-secret"
+  type  = "SecureString"
+  value = random_password.jwt.result
 }

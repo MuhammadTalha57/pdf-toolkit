@@ -1,199 +1,74 @@
-# PDF Toolkit — Backend API (`apps/api`)
+# API — application tier (`apps/api`)
 
-An Express API that merges, splits, and reorganizes PDFs, deployed as a Vercel serverless function. Consumed by the [`apps/web`](../web/README.md) frontend, but usable from any client.
+Express 5 + TypeScript service that owns authentication, PDF processing and
+document history. In AWS it runs as the `pdf-toolkit-prod-api` ECS service and
+is reachable only from the web tier.
 
-## Tech stack
+## How it works
 
-- **Express 5**
-- **pdf-lib** for all PDF manipulation (pure JavaScript, no native binaries — this is what makes it serverless-compatible)
-- **Vercel Blob** for file storage
-- **Multer** for parsing multipart uploads (in-memory, never written to disk)
-- **express-rate-limit** for basic abuse protection
-- **Vitest** for unit tests
-- TypeScript throughout, run with `tsx`/`ts-node-dev` locally
+- **Auth:** email + bcrypt password hash in PostgreSQL; a signed JWT (HS256) in
+  an `httpOnly`, `SameSite=Lax` cookie.
+- **Upload:** `POST /pdf/upload` validates the PDF, stores it in S3 under
+  `tmp/<uuid>.pdf`, and records a `temp` document row (24 h TTL; an S3
+  lifecycle rule deletes leftovers).
+- **Operations:** merge / split / organize load the caller's own documents from
+  S3, transform them with `pdf-lib`, store results under
+  `users/<userId>/results/<uuid>.pdf` as `ready` rows, and delete the temp
+  inputs.
+- **Download:** streamed from S3 after an ownership check; the bucket is never
+  public and no presigned URLs are issued.
+- **Migrations:** SQL in `src/db/migrations` runs on start-up under a
+  PostgreSQL advisory lock, so concurrent tasks don't race.
+- **Hardening:** helmet, rate limiting (300 requests / 15 min per client),
+  upload size cap, PDF MIME and parse checks, UUID validation, non-root
+  container user.
 
-## Architecture notes
+## Endpoints
 
-This API is designed around two hard constraints of Vercel's serverless functions: a request/response body limit of roughly 4.5MB, and no persistent disk between invocations.
+| Method | Path | Auth | Purpose |
+|---|---|---|---|
+| GET | `/health` | – | Liveness check (used by the container health check) |
+| POST | `/auth/signup` | – | Create an account, set the session cookie |
+| POST | `/auth/login` | – | Sign in |
+| POST | `/auth/logout` | – | Clear the cookie |
+| GET | `/auth/me` | ✓ | Current user |
+| POST | `/pdf/upload` | ✓ | Multipart field `file`; returns `documentId`, `pageCount` |
+| POST | `/pdf/merge` | ✓ | `{ "documentIds": [...] }` |
+| POST | `/pdf/split` | ✓ | Split one document into page ranges |
+| POST | `/pdf/organize` | ✓ | Reorder / drop pages / insert blanks |
+| GET | `/documents` | ✓ | The caller's history |
+| GET | `/documents/:id/download` | ✓ | Download one of the caller's results |
 
-**Files are never sent as raw bytes to the merge/split/organize endpoints.** Instead, a file is uploaded once via `POST /pdf/upload`, which stores it in Vercel Blob and returns a public URL. Every other endpoint takes that URL (or URLs) as input, downloads the file server-side with `pdf-lib`, performs the transformation, uploads the result back to Blob, and returns the result's URL. This keeps the JSON bodies these endpoints deal with small regardless of how large the underlying PDF is.
+The browser calls these through the web tier as `/api/...`.
 
-**Multer uses in-memory storage**, not disk storage — there's no durable disk to write to in a serverless function, and the file only needs to exist in memory long enough to be forwarded to Blob.
+## Configuration
 
-## API reference
+All settings are environment variables, validated at start-up
+(`src/config/env.ts`). See [`.env.example`](.env.example).
 
-Base URL: the deployed project's Vercel URL (or `http://localhost:<port>` locally). All endpoints are mounted under `/pdf`, except `/health`.
-
-### `GET /health`
-
-Returns `{ "status": "ok" }`. Used to confirm the deployment is live.
-
-### `POST /pdf/upload`
-
-Uploads a single PDF and returns its storage URL. Every other endpoint depends on this one running first.
-
-- **Body:** `multipart/form-data` with the file under the field name `file`.
-- **Constraints:** PDF only (checked via MIME type), 4MB max.
-- **200 response:**
-  ```json
-  { "message": "PDF uploaded successfully.", "url": "https://...blob.vercel-storage.com/..." }
-  ```
-- **Errors:** `400` if no file or the file isn't a PDF, `413` if it exceeds 4MB, `502` if the upload to Blob fails.
-
-### `POST /pdf/merge`
-
-Combines multiple PDFs, in the order given, into one file.
-
-- **Body:**
-  ```json
-  { "urls": ["https://.../a.pdf", "https://.../b.pdf"] }
-  ```
-- **200 response:**
-  ```json
-  { "message": "PDFs merged and uploaded successfully.", "url": "https://..." }
-  ```
-- **Errors:** `400` if `urls` is missing, empty, contains a non-string/empty entry, or any URL can't be read as a PDF; `500` if the merge itself fails; `502` if uploading the result fails.
-
-### `POST /pdf/split`
-
-Splits a PDF into multiple output files. Each output file can be built from more than one page range — `splits` is an array of "output files", and each output file is an array of `[start, end]` page ranges (0-indexed, inclusive) to concatenate.
-
-- **Body:**
-  ```json
-  {
-    "url": "https://.../source.pdf",
-    "splits": [
-      [[0, 2]],
-      [[3, 3], [5, 7]]
-    ]
-  }
-  ```
-  The example above produces two files: pages 0–2 in the first, and pages 3 plus 5–7 combined in the second.
-- **200 response:**
-  ```json
-  { "message": "PDF split and uploaded successfully.", "urls": ["https://...", "https://..."] }
-  ```
-- **Errors:** `400` if `url`/`splits` are missing or malformed, or if the source PDF can't be read; `502` if uploading any result fails.
-
-### `POST /pdf/organize`
-
-Rebuilds a PDF from an ordered list of operations — each entry is either an existing page (referenced by its original 0-indexed position) or a new blank page. The output page order matches the order of `operations`.
-
-- **Body:**
-  ```json
-  {
-    "url": "https://.../source.pdf",
-    "operations": [
-      { "type": "page", "sourceIndex": 2 },
-      { "type": "blank" },
-      { "type": "page", "sourceIndex": 0 }
-    ]
-  }
-  ```
-- **200 response:**
-  ```json
-  { "message": "PDF organized and uploaded successfully.", "url": "https://..." }
-  ```
-- **Errors:** `400` if `url`/`operations` are missing or malformed, if any `page` operation has a negative or non-integer `sourceIndex`, or if the source PDF can't be read; `502` if uploading the result fails.
-
-Page rotation is not currently supported by this endpoint.
-
-## Directory structure
-
-```
-apps/api/
-├── api/
-│   └── index.ts             # Vercel's serverless entry point — re-exports the Express app
-├── src/
-│   ├── app.ts                # Express app: middleware, routes, error handler (no app.listen here)
-│   ├── routes/
-│   │   └── pdf.routes.ts
-│   ├── controllers/
-│   │   └── pdf.controller.ts # request validation + orchestration for all four endpoints
-│   ├── services/
-│   │   ├── read.service.ts    # fetches and parses a PDF from a URL
-│   │   ├── merge.service.ts
-│   │   ├── split.service.ts
-│   │   ├── organize.service.ts
-│   │   └── *.service.test.ts  # Vitest unit tests, colocated with each service
-│   ├── middlewares/
-│   │   ├── upload.middleware.ts  # Multer config (memory storage, PDF-only, 4MB limit)
-│   │   └── error.middleware.ts   # centralized JSON error responses
-│   └── utils/
-│       └── blobUtils.ts       # wraps @vercel/blob's put()
-├── vercel.json
-├── tsconfig.json
-└── package.json
-```
-
-## Environment variables
-
-| Variable | Required | Purpose |
+| Variable | Required | In AWS comes from |
 |---|---|---|
-| `BLOB_READ_WRITE_TOKEN` | Yes | Vercel Blob write access. Auto-provided by Vercel when a Blob store is connected to the project; for local development, pull it with `vercel env pull` or copy it from the Vercel dashboard. |
-| `FRONTEND_URL` | Yes | The frontend's origin, used to configure CORS (`cors({ origin: FRONTEND_URL })`). Set to `http://localhost:3000` locally, and to the deployed frontend's URL in production. |
-| `PORT` | No | Port for the local dev server. Defaults to whatever the entry point you run specifies (see below). |
+| `DATABASE_URL` | yes | SSM SecureString (`/pdf-toolkit-prod/database-url`) |
+| `JWT_SECRET` | yes (≥ 16 chars) | SSM SecureString (`/pdf-toolkit-prod/jwt-secret`) |
+| `S3_BUCKET` | yes | Terraform (task definition) |
+| `AWS_REGION` | – | Terraform |
+| `FRONTEND_ORIGIN` | – | Terraform (ALB URL) |
+| `COOKIE_SECURE` | – | Terraform (`false`: HTTP demo ALB) |
+| `MAX_UPLOAD_MB` | – | Terraform |
+| `S3_ENDPOINT`, `S3_ACCESS_KEY_ID`, `S3_SECRET_ACCESS_KEY` | local only | MinIO in Compose; unset in AWS (the task role is used) |
 
-Create a `.env` file in `apps/api` for local development (not committed):
-
-```
-BLOB_READ_WRITE_TOKEN=your-token-here
-FRONTEND_URL=http://localhost:3000
-```
-
-## Local development
-
-The exported `app` in `src/app.ts` deliberately does not call `.listen()` — that's intentional, since the same app instance is reused as a serverless function handler in `api/index.ts`. To run it locally, you need a small entry point that starts an HTTP listener. If `src/server.ts` isn't already present in your checkout, add it:
-
-```ts
-// src/server.ts
-import app from "./app.js";
-
-const PORT = process.env.PORT || 4000;
-
-app.listen(PORT, () => {
-  console.log(`API listening on http://localhost:${PORT}`);
-});
-```
-
-Then:
+## Scripts
 
 ```bash
-npm install
-npm run dev     # tsx watch src/server.ts
+npm run dev --workspace api          # tsx watch on :4000 (reads apps/api/.env)
+npm test --workspace api             # Vitest unit tests
+npm run build --workspace api        # compile to dist/
+npm run check-types --workspace api
 ```
 
-## Testing
+## Container
 
-```bash
-npm test        # vitest run
-```
-
-Each PDF service (`merge`, `split`, `organize`, `read`) has a colocated unit test that exercises it directly with in-memory PDFs, without going through HTTP or the network.
-
-## Deployment
-
-Deployed to Vercel as its own project, separate from the frontend:
-
-- **Root Directory:** `apps/api`
-- **Framework Preset:** Other
-- **Environment Variables:** `BLOB_READ_WRITE_TOKEN`, `FRONTEND_URL`
-
-This project uses an explicit `vercel.json` rather than relying on Vercel's zero-config Express detection:
-
-```json
-{
-  "version": 2,
-  "builds": [{ "src": "api/index.ts", "use": "@vercel/node" }],
-  "routes": [{ "src": "/(.*)", "dest": "api/index.ts" }]
-}
-```
-
-This tells Vercel exactly what to build and how to route every request to it, which avoids ambiguity in a Turborepo-managed monorepo where framework auto-detection has otherwise picked the wrong build behavior for this project.
-
-## Known limitations
-
-- No authentication — every endpoint is open to whoever has the URL, subject only to the rate limiter.
-- No persistence — nothing is written to a database. `mongoose` is a listed dependency in `package.json` in anticipation of a future per-user history feature, but no models or connection exist yet.
-- No page rotation in the organize endpoint.
-- 4MB per-file upload limit, set below Vercel's serverless request body cap.
+`Dockerfile` (build from the repository root): a multi-stage `node:20-alpine`
+build that installs only this workspace, compiles TypeScript, downloads the AWS
+RDS CA bundle (used for `sslmode=verify-full`) and runs `node dist/server.js` as
+the `node` user on port 3000.

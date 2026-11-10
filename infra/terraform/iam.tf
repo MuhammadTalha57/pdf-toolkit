@@ -9,31 +9,25 @@ data "aws_iam_policy_document" "ecs_tasks_assume" {
   }
 }
 
-resource "aws_iam_role" "ecs_execution" {
-  name               = "${local.name_prefix}-ecs-execution"
-  assume_role_policy = data.aws_iam_policy_document.ecs_tasks_assume.json
+# ---------------------------------------------------------------------------
+# Execution role: used by the ECS agent (not the app) to pull images, write
+# logs, and read the two SSM secrets for the API container.
+# ---------------------------------------------------------------------------
 
-  tags = {
-    Name = "${local.name_prefix}-ecs-execution"
-  }
+resource "aws_iam_role" "ecs_execution" {
+  name               = "${local.name}-ecs-execution"
+  assume_role_policy = data.aws_iam_policy_document.ecs_tasks_assume.json
 }
 
-resource "aws_iam_role_policy_attachment" "ecs_execution_managed" {
+resource "aws_iam_role_policy_attachment" "ecs_execution" {
   role       = aws_iam_role.ecs_execution.name
   policy_arn = "arn:aws:iam::aws:policy/service-role/AmazonECSTaskExecutionRolePolicy"
 }
 
-data "aws_iam_policy_document" "ecs_execution_ssm" {
+data "aws_iam_policy_document" "ecs_execution_secrets" {
   statement {
-    actions = [
-      "ssm:GetParameter",
-      "ssm:GetParameters",
-    ]
-
-    resources = [
-      aws_ssm_parameter.database_url.arn,
-      aws_ssm_parameter.jwt_secret.arn,
-    ]
+    actions   = ["ssm:GetParameters"]
+    resources = [aws_ssm_parameter.database_url.arn, aws_ssm_parameter.jwt_secret.arn]
   }
 
   statement {
@@ -48,74 +42,55 @@ data "aws_iam_policy_document" "ecs_execution_ssm" {
   }
 }
 
-resource "aws_iam_role_policy" "ecs_execution_ssm" {
-  name   = "ssm-secrets"
+resource "aws_iam_role_policy" "ecs_execution_secrets" {
+  name   = "read-app-secrets"
   role   = aws_iam_role.ecs_execution.id
-  policy = data.aws_iam_policy_document.ecs_execution_ssm.json
+  policy = data.aws_iam_policy_document.ecs_execution_secrets.json
 }
+
+# ---------------------------------------------------------------------------
+# API task role: what the API code itself may do - read/write objects in its
+# own bucket and nothing else. The web task needs no AWS permissions at all.
+# ---------------------------------------------------------------------------
 
 resource "aws_iam_role" "api_task" {
-  name               = "${local.name_prefix}-api-task"
+  name               = "${local.name}-api-task"
   assume_role_policy = data.aws_iam_policy_document.ecs_tasks_assume.json
-
-  tags = {
-    Name = "${local.name_prefix}-api-task"
-  }
 }
 
-data "aws_iam_policy_document" "api_s3" {
+data "aws_iam_policy_document" "api_task" {
   statement {
-    actions = [
-      "s3:PutObject",
-      "s3:GetObject",
-      "s3:DeleteObject",
-      "s3:ListBucket",
-      "s3:GetBucketLocation",
-    ]
-
-    resources = [
-      aws_s3_bucket.files.arn,
-      "${aws_s3_bucket.files.arn}/*",
-    ]
+    actions   = ["s3:PutObject", "s3:GetObject", "s3:DeleteObject"]
+    resources = ["${aws_s3_bucket.files.arn}/*"]
   }
 }
 
-resource "aws_iam_role_policy" "api_s3" {
-  name   = "s3-documents"
+resource "aws_iam_role_policy" "api_task" {
+  name   = "s3-files"
   role   = aws_iam_role.api_task.id
-  policy = data.aws_iam_policy_document.api_s3.json
+  policy = data.aws_iam_policy_document.api_task.json
 }
 
-resource "aws_iam_role" "web_task" {
-  name               = "${local.name_prefix}-web-task"
-  assume_role_policy = data.aws_iam_policy_document.ecs_tasks_assume.json
+# ---------------------------------------------------------------------------
+# GitHub Actions deploy role (OIDC). No long-lived AWS keys are stored in
+# GitHub: the workflow exchanges its short-lived OIDC token for this role, and
+# only workflows running on the main branch of this repository may assume it.
+#
+# The GitHub OIDC identity provider is account-wide and usually created once
+# per account; see docs/DEPLOYMENT.md step 3.3.
+# ---------------------------------------------------------------------------
 
-  tags = {
-    Name = "${local.name_prefix}-web-task"
-  }
-}
-
-resource "aws_iam_openid_connect_provider" "github" {
-  count = var.create_github_oidc ? 1 : 0
-
-  url             = "https://token.actions.githubusercontent.com"
-  client_id_list  = ["sts.amazonaws.com"]
-  thumbprint_list = ["6938fd4d98bab03faadb97b34396831e3780aea1"]
-
-  tags = {
-    Name = "${local.name_prefix}-github-oidc"
-  }
+data "aws_iam_openid_connect_provider" "github" {
+  url = "https://token.actions.githubusercontent.com"
 }
 
 data "aws_iam_policy_document" "github_assume" {
-  count = local.github_oidc_arn != "" ? 1 : 0
-
   statement {
     actions = ["sts:AssumeRoleWithWebIdentity"]
 
     principals {
       type        = "Federated"
-      identifiers = [local.github_oidc_arn]
+      identifiers = [data.aws_iam_openid_connect_provider.github.arn]
     }
 
     condition {
@@ -125,70 +100,47 @@ data "aws_iam_policy_document" "github_assume" {
     }
 
     condition {
-      test     = "StringLike"
+      test     = "StringEquals"
       variable = "token.actions.githubusercontent.com:sub"
-      values = [
-        "repo:${var.github_repository}:ref:refs/heads/main",
-        "repo:${var.github_repository}:pull_request",
-      ]
+      values   = ["repo:${var.github_repository}:ref:refs/heads/main"]
     }
   }
 }
 
 resource "aws_iam_role" "github_deploy" {
-  count = local.github_oidc_arn != "" ? 1 : 0
-
-  name               = "${local.name_prefix}-github-deploy"
-  assume_role_policy = data.aws_iam_policy_document.github_assume[0].json
-
-  tags = {
-    Name = "${local.name_prefix}-github-deploy"
-  }
+  name               = "${local.name}-github-deploy"
+  assume_role_policy = data.aws_iam_policy_document.github_assume.json
 }
 
 data "aws_iam_policy_document" "github_deploy" {
-  count = local.github_oidc_arn != "" ? 1 : 0
-
   statement {
+    sid       = "EcrLogin"
     actions   = ["ecr:GetAuthorizationToken"]
     resources = ["*"]
   }
 
   statement {
+    sid = "PushImages"
     actions = [
       "ecr:BatchCheckLayerAvailability",
-      "ecr:InitiateLayerUpload",
-      "ecr:UploadLayerPart",
-      "ecr:CompleteLayerUpload",
-      "ecr:PutImage",
       "ecr:BatchGetImage",
-      "ecr:DescribeImages",
-      "ecr:DescribeRepositories",
+      "ecr:CompleteLayerUpload",
+      "ecr:InitiateLayerUpload",
+      "ecr:PutImage",
+      "ecr:UploadLayerPart",
     ]
-
-    resources = [
-      aws_ecr_repository.api.arn,
-      aws_ecr_repository.web.arn,
-    ]
+    resources = [for repo in aws_ecr_repository.repo : repo.arn]
   }
 
   statement {
-    actions = [
-      "ecs:UpdateService",
-      "ecs:DescribeServices",
-    ]
-
-    resources = [
-      aws_ecs_service.api.id,
-      aws_ecs_service.web.id,
-    ]
+    sid       = "RedeployServices"
+    actions   = ["ecs:UpdateService", "ecs:DescribeServices"]
+    resources = [aws_ecs_service.web.id, aws_ecs_service.api.id]
   }
 }
 
 resource "aws_iam_role_policy" "github_deploy" {
-  count = local.github_oidc_arn != "" ? 1 : 0
-
   name   = "deploy"
-  role   = aws_iam_role.github_deploy[0].id
-  policy = data.aws_iam_policy_document.github_deploy[0].json
+  role   = aws_iam_role.github_deploy.id
+  policy = data.aws_iam_policy_document.github_deploy.json
 }
