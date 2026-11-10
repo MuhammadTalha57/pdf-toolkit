@@ -7,11 +7,12 @@ The brief is in [`CEA - Problem Statement.pdf`](CEA%20-%20Problem%20Statement.pd
 
 | # | Deliverable | Location |
 |---|---|---|
-| 1 | Architecture diagram | [`architecture/architecture.svg`](architecture/architecture.svg) (PNG alongside) |
-| 2 | Deployment evidence (screenshots) | `screenshots/aws/` — capture list in [`docs/DEPLOYMENT.md`](../docs/DEPLOYMENT.md#evidence-to-capture-cea-deliverable-2); local app shots in `screenshots/local/` |
+| 1 | Architecture diagram (draw.io, AWS icons) | [`architecture/architecture.drawio`](architecture/architecture.drawio) → exported `architecture.png` / `.svg` |
+| 2 | Deployment evidence (screenshots) | [`screenshots/aws/`](screenshots/aws) (AWS, CI/CD, live app); local run in `screenshots/local/` |
 | 3 | Source files | Dockerfiles: [`apps/web/Dockerfile`](../apps/web/Dockerfile), [`apps/api/Dockerfile`](../apps/api/Dockerfile) · [`docker-compose.yml`](../docker-compose.yml) · pipeline: [`.github/workflows/ci-cd.yml`](../.github/workflows/ci-cd.yml) · IaC: [`infra/terraform/`](../infra/terraform) · repo: https://github.com/MuhammadTalha57/pdf-toolkit |
-| 4 | Technical report (4–6 pages, incl. NFR section) | [`report/technical-report.md`](report/technical-report.md) |
+| 4 | Technical report (title + 5 pages, incl. NFR section) | LaTeX source [`report/latex/main.tex`](report/latex/main.tex) |
 | – | Cost estimate + optimisations | [`report/cost-estimate.md`](report/cost-estimate.md) |
+| – | **Ready-to-submit folder** | [`submission/`](submission) (add `report.pdf` to `submission/04-report/`) |
 | – | How to reproduce | [`docs/DEPLOYMENT.md`](../docs/DEPLOYMENT.md) |
 
 ## Requirement checklist

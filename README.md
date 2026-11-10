@@ -52,7 +52,7 @@ docker-compose.yml    Full stack locally (PostgreSQL + MinIO + API + web)
   images to **ECR** and rolls the ECS services.
 
 Design rationale, security controls and the NFR analysis are in
-[`CEA/report/technical-report.md`](CEA/report/technical-report.md).
+[`CEA/report/latex/main.tex`](CEA/report/latex/main.tex).
 
 ## Run locally
 
